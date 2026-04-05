@@ -58,9 +58,11 @@ func (s swimlaneModel) Update(msg tea.KeyMsg) (swimlaneModel, tea.Cmd) {
 		}
 	case "g":
 		s.scroll = 0
-	case "n", "tab":
+	case "G":
+		s.scroll = 999 // clamped during render
+	case "n", "right", "l", "tab":
 		s.nextPromptWithAgents()
-	case "N", "shift+tab":
+	case "N", "left", "h", "shift+tab":
 		s.prevPromptWithAgents()
 	}
 	return s, nil
@@ -377,7 +379,7 @@ func (s *swimlaneModel) lastPromptWithAgents() int {
 }
 
 func (s swimlaneModel) statusBar() string {
-	keys := KeyStyle.Render("n/N") + " " + KeyDescStyle.Render("prompt") + "  " +
+	keys := KeyStyle.Render("←/→") + " " + KeyDescStyle.Render("prompt") + "  " +
 		KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("scroll") + "  " +
 		KeyStyle.Render("esc") + " " + KeyDescStyle.Render("timeline") + "  " +
 		KeyStyle.Render("P") + " " + KeyDescStyle.Render("picker") + "  " +

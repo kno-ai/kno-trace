@@ -664,9 +664,22 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case "enter":
-		// Expand focused agent in detail pane.
 		selected := a.timeline.list.SelectedPrompt()
-		if selected != nil && a.timeline.detail.IsAgentFocused() {
+		if selected == nil {
+			return a, nil
+		}
+		if a.timeline.detail.IsAgentExpanded() {
+			// Inside expanded agent — drill into nested agent if focused.
+			ag := a.timeline.detail.resolveExpandedAgent(selected)
+			if ag != nil && len(ag.Children) > 0 && a.timeline.detail.IsAgentFocused() {
+				a.timeline.detail.ExpandAgent(ag.Children)
+			}
+		} else if a.timeline.detail.IsAgentFocused() {
+			// Agent focused at prompt level — expand it.
+			a.timeline.detail.ExpandAgent(selected.Agents)
+		} else if len(selected.Agents) > 0 {
+			// No agent focused — auto-focus first agent and expand.
+			a.timeline.detail.agentCursor = 0
 			a.timeline.detail.ExpandAgent(selected.Agents)
 		}
 		return a, nil
@@ -674,6 +687,11 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// If agent is expanded, collapse one level.
 		if a.timeline.detail.IsAgentExpanded() {
 			a.timeline.detail.CollapseAgent()
+			return a, nil
+		}
+		// If agent cursor is active, clear it.
+		if a.timeline.detail.IsAgentFocused() {
+			a.timeline.detail.agentCursor = -1
 			return a, nil
 		}
 		// If filter is active (but not filtering), clear it.
@@ -689,14 +707,21 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.statusMsg = ""
 		return a, nil
 	case "tab":
-		// Move agent cursor down.
+		// Move agent cursor down (cycle through agents at current level).
 		selected := a.timeline.list.SelectedPrompt()
-		if selected != nil && len(selected.Agents) > 0 {
+		if selected == nil {
+			return a, nil
+		}
+		if a.timeline.detail.IsAgentExpanded() {
+			ag := a.timeline.detail.resolveExpandedAgent(selected)
+			if ag != nil && len(ag.Children) > 0 {
+				a.timeline.detail.AgentCursorDown(len(ag.Children))
+			}
+		} else if len(selected.Agents) > 0 {
 			a.timeline.detail.AgentCursorDown(len(selected.Agents))
 		}
 		return a, nil
 	case "shift+tab":
-		// Move agent cursor up.
 		a.timeline.detail.AgentCursorUp()
 		return a, nil
 	}
