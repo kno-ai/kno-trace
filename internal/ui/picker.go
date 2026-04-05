@@ -200,7 +200,7 @@ func (m pickerModel) View() string {
 func (m pickerModel) formatSessionLine(s *model.SessionMeta, selected bool) string {
 	projectWidth := 30
 	if m.width > 0 {
-		projectWidth = min(30, m.width/3)
+		projectWidth = max(10, min(30, m.width/3))
 	}
 
 	project := Truncate(s.ProjectName, projectWidth)

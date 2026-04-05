@@ -36,8 +36,17 @@ type Prompt struct {
 	Warnings    []Warning
 	// ContextPct: input_tokens of last assistant message / model's context window size * 100.
 	// 0 means token data was not available — do not display context% in that case.
-	ContextPct  int
-	Interrupted bool // true if this was the last prompt and session was cut short
+	ContextPct        int
+	Interrupted       bool              // true if this was the last prompt and session was cut short
+	BranchTransition  BranchTransition  // non-zero when gitBranch changed during this prompt
+	IsDurationOutlier bool              // true if duration >2σ above mean (only computed with ≥5 prompts)
+}
+
+// BranchTransition records a git branch change observed during a prompt.
+// Zero value means no transition occurred.
+type BranchTransition struct {
+	From string
+	To   string
 }
 
 // ToolCall represents a single tool invocation by any actor (parent or agent).
@@ -92,6 +101,7 @@ const (
 // AgentNode is a subagent spawned during a prompt.
 type AgentNode struct {
 	ID                string
+	ToolUseID         string       // the tool_use block ID that spawned this agent — used for result matching
 	SessionID         string       // conversation ID used by this agent in the log
 	Label             string       // generated: "subagent-1", "subagent-2"
 	ModelName         string       // model used by this agent (from its assistant messages)
@@ -141,6 +151,7 @@ const (
 	WarnAgentConflict   WarnType = "agent_conflict"
 	WarnReplayGap       WarnType = "replay_gap"
 	WarnAgentUnlinked   WarnType = "agent_unlinked"
+	WarnLoopDetected    WarnType = "loop_detected"   // same tool+path repeated ≥threshold times
 )
 
 // FileHistory tracks all interactions with a file across the session.

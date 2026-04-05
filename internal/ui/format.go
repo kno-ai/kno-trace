@@ -84,8 +84,15 @@ func FormatDate(t time.Time) string {
 
 // Truncate shortens a string to maxLen, appending "..." if truncated.
 func Truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
 	if maxLen <= 3 {
-		return s
+		runes := []rune(s)
+		if len(runes) <= maxLen {
+			return s
+		}
+		return string(runes[:maxLen])
 	}
 	runes := []rune(s)
 	if len(runes) <= maxLen {

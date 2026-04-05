@@ -99,6 +99,18 @@ Hard-won knowledge from building each milestone. Read before starting a new mile
 - **First JSONL line is not always a user message.** Real sessions often start with `file-history-snapshot` lines that lack `timestamp` and `cwd` fields. The meta parser must scan forward through the first ~10 lines to find these fields. Don't assume line 1 has what you need.
 - **Not all line types carry `timestamp`.** `file-history-snapshot` and some `queue-operation` lines omit it. Any code extracting timestamps must check for presence, not assume.
 - **`cwd` field is the source of truth for project path.** The encoded directory name under `~/.claude/projects/` is ambiguous to reverse (dashes in real directory names). Extract the real project path from the `cwd` field on user/assistant message lines instead.
-- **JSONL lines can be large.** Assistant messages with streaming snapshots include full content blocks. The scanner buffer needs to be at least 1MB. The default `bufio.Scanner` buffer (64KB) is too small for some real lines.
+- **JSONL lines can be large.** Assistant messages with streaming snapshots produce single lines over 2MB. Use `bufio.Reader.ReadBytes('\n')` instead of `bufio.Scanner` — it grows dynamically with no cap. `bufio.Scanner` has a fixed max buffer and stops entirely when exceeded, silently losing all subsequent lines.
 - **`go test` changes working directory** to the package directory. `os.Getwd()` in tests returns `internal/discovery/`, not the project root. `FindCWDSessions()` returning 0 in tests is correct behavior, not a bug.
 - **Global keybindings vs view-local input.** Any key handled globally (like `q` for quit) will intercept that key during text input (like fuzzy filter). Keys that conflict with text input must be handled per-view, not globally. Only `ctrl+c` is safe as a true global.
+
+### M2: Parser & Builder
+
+- **`message.content` on user lines has 3 shapes.** Plain string (human turns in some fixtures), array of text blocks (human turns in others), array of tool_result blocks. Check `sourceToolAssistantUUID` presence as the most reliable indicator of tool results — more reliable than inspecting content block types.
+- **`toolUseResult` has 4 shapes.** Plain string (Write/Edit/MCP), object with `file` (Read), object with `stdout/stderr/exitCode` (Bash), object with `status/agentId/totalDurationMs` (Agent). The `content` field within Agent results can itself be a string or an array.
+- **Streaming snapshots are complete replacements.** Each snapshot for a given `requestId` contains the full message content at that point — not a delta. For parallel agents, each Agent `tool_use` may appear in a DIFFERENT snapshot. Must collect tool_use blocks from ALL snapshots and merge, deduplicating by tool_use ID.
+- **`.claude/` is 8 characters, not 7.** Off-by-one when computing string index after `.claude/` prefix. Use `len(prefix)` instead of hardcoded offsets.
+- **Duration outlier detection: strict >2σ.** Prompts exactly at the threshold (mean + 2*stddev) are NOT flagged. The last prompt's EndTime may be zero (not sealed by a following human turn) — use session EndTime as fallback.
+- **Progress lines appear AFTER the main conversation flow** in some fixtures. Don't assume chronological ordering by line position. Sort all events by timestamp after parsing.
+- **`promptId` on tool_result lines is inconsistent.** Sometimes present, sometimes absent. Do not rely on it for tool_result lines — use `sourceToolAssistantUUID` and content block type instead.
+- **Real JSONL lines can exceed 2MB.** Use `bufio.Reader.ReadBytes('\n')` everywhere — no buffer cap needed. `bufio.Scanner` silently fails and loses all remaining lines when the buffer is exceeded. Tested against 59 real sessions — largest line was 2.18MB.
+- **Some sessions contain only `file-history-snapshot` lines.** No user/assistant messages, so 0 prompts. This is valid — display the header with zero prompts, don't crash.

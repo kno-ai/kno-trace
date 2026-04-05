@@ -45,13 +45,28 @@ func BuildMeta(filePath string, projectDir string) (*model.SessionMeta, error) {
 	}
 
 	// Read first ~10 lines to find earliest timestamp and cwd.
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
+	// Lines are capped at 10MB each — BuildMeta only needs timestamp/cwd fields
+	// which appear early in the JSON, so huge lines are skipped safely.
+	const metaMaxLineSize = 10 * 1024 * 1024
+	reader := bufio.NewReaderSize(f, 64*1024)
 	linesRead := 0
-	for scanner.Scan() && linesRead < 10 {
+	for linesRead < 10 {
+		lineBytes, err := reader.ReadBytes('\n')
+		if len(lineBytes) == 0 && err != nil {
+			break
+		}
 		linesRead++
+		if len(lineBytes) > metaMaxLineSize {
+			if err != nil {
+				break
+			}
+			continue // Skip oversized lines — they won't have useful meta fields.
+		}
 		var line jsonLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+		if jsonErr := json.Unmarshal(lineBytes, &line); jsonErr != nil {
+			if err != nil {
+				break
+			}
 			continue
 		}
 		if line.Timestamp != "" && meta.StartTime.IsZero() {

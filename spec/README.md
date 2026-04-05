@@ -754,6 +754,12 @@ loop_detection_threshold: 3 # same tool+path repeated this many times -> WarnLoo
 
 # Resource limits
 max_snapshots_per_file: 10  # max WriteSnapshots retained per file (oldest evicted first)
+
+# Safety limits — fail-safes against corrupted or malicious files.
+# Normal sessions are far below these limits. Adjust only if you see
+# "too large" warnings on legitimate session files.
+max_file_size_mb: 1024      # reject session files above this (default 1GB)
+max_line_size_mb: 100       # skip individual JSONL lines above this (default 100MB)
 ```
 
 **Implementation notes:**
