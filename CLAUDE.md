@@ -1,0 +1,68 @@
+# kno-trace Development Guidelines
+
+## Use Cases Drive Features
+
+Every feature decision must trace back to a use case defined in `spec/README.md#use-cases`. Before implementing or designing a feature, identify which use case(s) it serves. If it doesn't serve one, it doesn't belong in v1. The use cases are:
+
+- **UC1:** "What did Claude just do?" — real-time prompt-by-prompt visibility
+- **UC2:** "What happened to this file?" — complete file change history within a session
+- **UC3:** "What changed between then and now?" — session-scoped diff between any two points
+- **UC4:** "What are my agents doing right now?" — live visibility into multi-agent workflows. This is THE use case. Claude Code shows nothing while agents run. kno-trace is the only window in.
+- **UC5:** "Is my context filling up?" — passive context window monitoring
+- **UC6:** "Which files are getting thrashed?" — identify hot spots and churn
+- **UC7:** "Let me quickly check a past session" — fast session discovery and review
+
+The overarching vision is **"control room for Claude Code"** — you glance at kno-trace to know the state of things, drill in when something looks wrong, and leave it running in a second terminal. Every feature should serve this: passive monitoring with on-demand depth.
+
+When in doubt about scope, complexity, or priority, ask: "Which use case does this serve, and does it make the control room better?"
+
+---
+
+## Inviolable Rules
+
+These rules cannot be broken under any circumstances. No feature, optimization, convenience, or dependency justifies violating them. They are not defaults that can be toggled — they are architectural constraints. If a proposed change would require relaxing any of these, the change is rejected.
+
+- **Never transmit data.** kno-trace makes zero network connections. No telemetry, no analytics, no update checks, no crash reports, no DNS lookups, no license validation. The binary must function identically air-gapped. There is no code path that opens a socket. No dependency may phone home. This means: no HTTP clients in the dependency tree, no "optional" reporting, no deferred network calls behind feature flags.
+- **Never write to the user's filesystem** (outside of kno-trace's own config directory). kno-trace is read-only by design. It reads JSONL logs and its own config. It writes nothing else. No temp files in the project directory, no sidecar files next to sessions, no cache files outside config dir, no lock files, no pid files.
+- **Never capture or store session content.** kno-trace displays session data in memory while running. It does not copy, cache, or persist any session content beyond what the user's config file contains. When kno-trace exits, session data is gone. No replay logs, no session snapshots to disk, no "recent sessions" cache with content.
+- **Never collect usage data in any form.** No counters, no timings, no feature-usage flags, no anonymous statistics. Not locally, not remotely. The user's workflow is their own.
+- **No obfuscated behavior.** Every behavior of kno-trace must be explainable by reading the source. No hidden state, no undocumented flags, no compile-time toggles that change behavior. If it's not in the source and the config, it doesn't exist.
+- **Dependencies must be auditable.** Every dependency must be open source with a compatible license. Prefer well-known, widely-audited libraries. No vendored binaries, no pre-compiled blobs, no dependencies that pull from remote sources at build time beyond the Go module proxy. `go mod vendor` must produce a complete, buildable tree.
+- **No platform lock-in.** kno-trace builds and runs on macOS, Linux, and Windows from the same source. No platform-specific features that degrade the experience elsewhere. No CGO requirement unless absolutely unavoidable (and it is avoidable for this project).
+
+## Resource Discipline
+
+kno-trace runs alongside Claude Code — it must never compete for resources.
+
+- **Bounded memory.** No unbounded in-memory lists, maps, or buffers. Every collection that grows with session size must have a cap or a strategy:
+  - `FileHistory.WriteSnapshots`: cap stored snapshots per config (`max_snapshots_per_file`). Evict oldest, never evict most recent.
+  - `ToolCall.Output` (Bash output): truncated to 500 chars — enforce at parse time.
+  - Search/filter results: work on indices, not copies of data.
+  - Large JSONL replay: process line-by-line streaming, never load entire file into memory.
+- **Bounded CPU.** No polling loops. Use fsnotify events, not timers. Diff computation is on-demand (user navigates to it), never pre-computed for all file pairs. Fuzzy search debounces input — don't re-score on every keystroke.
+- **Bounded disk.** Config file only. No logs to disk by default. If debug logging is added, it must be opt-in and size-capped (rotating, max size in config).
+- **Graceful with large sessions.** A 100MB JSONL with 500 prompts must not OOM or freeze. Design for streaming and lazy computation. If a session is too large for a view, degrade gracefully (truncate lists with "N more..." indicators) rather than crash.
+
+## Conventions & Predictability
+
+- **Follow established TUI conventions.** Keybindings follow vim/lazygit/k9s patterns. `j/k` navigate, `g/G` top/bottom, `/` search, `?` help, `esc` back, `q` quit. Don't invent novel interactions when a convention exists.
+- **Consistent behavior across views.** Same key does the same conceptual thing everywhere. `esc` always means "back/dismiss/cancel." `enter` always means "select/expand." `q` always quits. `/` always searches. No view should surprise the user.
+- **Predictable navigation model.** Views are a flat set (timeline, swimlane, heatmap, diff) — not a deep hierarchy. Single-letter keys switch views. `esc` always moves toward "less detail." `P` always returns to the session picker. The user should always know where they are and how to get back.
+- **Show what you know, hide what you don't.** If data is unavailable (no token counts, no model name, no baseline for diff), hide the UI element entirely. Never show "0%", "unknown", or placeholder text. Absence is cleaner than noise.
+- **No heuristics in v1.** If a value cannot be derived exactly from the JSONL, don't display it. No guessing, no "approximately", no fuzzy classifications. This applies to Bash risk, agent retry detection, and any other pattern matching.
+- **Errors are visible, not fatal.** Malformed data, missing fields, unresolvable links — display a clear indicator in the UI and continue. Never crash on bad input. Never silently swallow errors. The user should be able to distinguish "this data doesn't exist" from "this data couldn't be parsed."
+
+## Configurability
+
+- **Configurable where users would reasonably disagree.** Thresholds (context% warnings), display preferences (auto-open behavior), and values that change over time (context window sizes) belong in config. Internal implementation details do not.
+- **Sensible defaults for everything.** The tool must work perfectly with zero configuration. Config exists for users who want to tune, not as a setup requirement. First run with no config file must be indistinguishable from a configured run with all defaults.
+- **Config is a single file.** `~/.config/kno-trace/config.yaml`, resolved via `os.UserConfigDir()`. No environment variables overriding config, no multiple config locations, no config merging. One file, one source of truth.
+- **Config is forward-compatible.** Unknown keys are ignored. Removing a config key reverts to the default. The tool never fails because of a config key it doesn't recognize.
+
+## Code Quality
+
+- **Comment classes, methods, and properties well** focusing on the "why" — why is this important, what is it responsible for, etc.
+- **Single source of truth.** Domain types in `internal/model/`. Styles in `ui/styles.go`. Formatting in `ui/format.go`. Config in `config/config.go`. Don't define the same concept in two places.
+- **No dead code.** Don't leave commented-out code, unused imports, or placeholder functions. If something isn't needed yet, don't write it.
+- **Errors are information.** Malformed JSONL lines, missing files, unresolvable agent links — log to stderr and continue. Never crash on bad input. Never silently swallow errors that would help the user understand what happened.
+- **Reproducible builds.** `go build` with the same source and Go version must produce functionally identical binaries. No build-time randomness, no timestamp embedding beyond what goreleaser provides for versioning.

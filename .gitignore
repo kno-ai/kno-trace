@@ -1,0 +1,30 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Build output
+dist/
+kno-trace
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug
+*.log
+__debug_bin*
+
+# Coverage
+coverage.txt
+coverage.html
+*.coverprofile
