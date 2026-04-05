@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kno-ai/kno-trace/internal/model"
 )
@@ -14,8 +15,9 @@ type Detail struct {
 	Offset int // scroll offset for long content
 }
 
-// View renders the detail pane for the given prompt. Returns empty if nil.
-func (d *Detail) View(p *model.Prompt) string {
+// View renders the detail pane for the given prompt.
+// isLive enables elapsed-time display for the active prompt and running agents.
+func (d *Detail) View(p *model.Prompt, isLive bool) string {
 	if p == nil {
 		return MutedStyle.Render("Select a prompt")
 	}
@@ -27,7 +29,7 @@ func (d *Detail) View(p *model.Prompt) string {
 	}
 
 	// Header: index, time, duration, model, tokens, context%.
-	d.renderHeader(&b, p)
+	d.renderHeader(&b, p, isLive)
 	b.WriteString("\n")
 
 	// Human text.
@@ -48,7 +50,7 @@ func (d *Detail) View(p *model.Prompt) string {
 	d.renderToolCalls(&b, p)
 
 	// Agents (collapsed).
-	d.renderAgents(&b, p)
+	d.renderAgents(&b, p, isLive)
 
 	content := b.String()
 
@@ -90,15 +92,19 @@ func (d *Detail) ScrollTop() {
 	d.Offset = 0
 }
 
-func (d *Detail) renderHeader(b *strings.Builder, p *model.Prompt) {
+func (d *Detail) renderHeader(b *strings.Builder, p *model.Prompt, isLive bool) {
 	// Time range.
 	start := p.StartTime.Local().Format("15:04:05")
 	end := "..."
-	if !p.EndTime.IsZero() {
-		end = p.EndTime.Local().Format("15:04:05")
-	}
 	duration := ""
-	if !p.EndTime.IsZero() {
+
+	isActivePrompt := p.EndTime.IsZero() && isLive
+	if isActivePrompt && !p.StartTime.IsZero() {
+		// Active live prompt: show running elapsed time.
+		elapsed := time.Since(p.StartTime)
+		duration = " " + FormatDuration(elapsed)
+	} else if !p.EndTime.IsZero() {
+		end = p.EndTime.Local().Format("15:04:05")
 		duration = " (" + FormatDuration(p.EndTime.Sub(p.StartTime)) + ")"
 	}
 
@@ -106,6 +112,7 @@ func (d *Detail) renderHeader(b *strings.Builder, p *model.Prompt) {
 	if p.IsDurationOutlier {
 		header += "  ⏱ slow"
 	}
+
 	b.WriteString(SelectedStyle.Render(header))
 	b.WriteString("\n")
 
@@ -218,35 +225,63 @@ func (d *Detail) renderToolCalls(b *strings.Builder, p *model.Prompt) {
 	}
 }
 
-func (d *Detail) renderAgents(b *strings.Builder, p *model.Prompt) {
+func (d *Detail) renderAgents(b *strings.Builder, p *model.Prompt, isLive bool) {
 	for _, agent := range p.Agents {
-		status := ""
-		switch agent.Status {
-		case model.AgentSucceeded:
-			status = "✓"
-		case model.AgentFailed:
-			status = "✗"
-		case model.AgentRunning:
-			status = "…"
-		}
-
 		agentType := agent.SubagentType
 		if agentType == "" {
 			agentType = "agent"
 		}
 
 		desc := Truncate(agent.TaskDescription, d.Width-30)
-		meta := ""
-		if agent.TotalToolUseCount > 0 {
-			meta = fmt.Sprintf(" — %d tools, %s tokens, %s",
-				agent.TotalToolUseCount,
-				FormatTokens(agent.TotalTokens),
-				FormatDuration(agent.Duration))
-		}
 
-		line := fmt.Sprintf("  ⬡ %s %s (%s) — %s%s",
-			status, agent.Label, agentType, desc, DimStyle.Render(meta))
-		b.WriteString(line + "\n")
+		switch agent.Status {
+		case model.AgentRunning:
+			var parts []string
+			if n := len(agent.ToolCalls); n > 0 {
+				parts = append(parts, fmt.Sprintf("%d tools so far", n))
+			}
+			if !agent.StartTime.IsZero() && isLive {
+				parts = append(parts, FormatDuration(time.Since(agent.StartTime)))
+			}
+			meta := ""
+			if len(parts) > 0 {
+				meta = " — " + strings.Join(parts, " — ")
+			}
+			b.WriteString(fmt.Sprintf("  ⬡ %s (%s) — running%s\n",
+				agent.Label, agentType, DimStyle.Render(meta)))
+			if desc != "" {
+				b.WriteString("    " + DimStyle.Render(desc) + "\n")
+			}
+
+		case model.AgentSucceeded:
+			meta := ""
+			if agent.TotalToolUseCount > 0 {
+				meta = fmt.Sprintf(" — %d tools, %s tokens, %s",
+					agent.TotalToolUseCount,
+					FormatTokens(agent.TotalTokens),
+					FormatDuration(agent.Duration))
+			}
+			line := fmt.Sprintf("  ⬡ ✓ %s (%s) — done%s",
+				agent.Label, agentType, DimStyle.Render(meta))
+			b.WriteString(line + "\n")
+
+		case model.AgentFailed:
+			meta := ""
+			if agent.TotalToolUseCount > 0 {
+				meta = fmt.Sprintf(" — %d tools, %s",
+					agent.TotalToolUseCount,
+					FormatDuration(agent.Duration))
+			}
+			line := fmt.Sprintf("  ⬡ ✗ %s (%s) — failed%s",
+				agent.Label, agentType, MutedStyle.Foreground(ColorRed).Render(meta))
+			b.WriteString(line + "\n")
+
+		default:
+			// Unknown status — show what we have.
+			line := fmt.Sprintf("  ⬡ %s (%s) — %s",
+				agent.Label, agentType, DimStyle.Render(desc))
+			b.WriteString(line + "\n")
+		}
 	}
 }
 

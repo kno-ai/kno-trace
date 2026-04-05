@@ -114,3 +114,19 @@ Hard-won knowledge from building each milestone. Read before starting a new mile
 - **`promptId` on tool_result lines is inconsistent.** Sometimes present, sometimes absent. Do not rely on it for tool_result lines — use `sourceToolAssistantUUID` and content block type instead.
 - **Real JSONL lines can exceed 2MB.** Use `bufio.Reader.ReadBytes('\n')` everywhere — no buffer cap needed. `bufio.Scanner` silently fails and loses all remaining lines when the buffer is exceeded. Tested against 59 real sessions — largest line was 2.18MB.
 - **Some sessions contain only `file-history-snapshot` lines.** No user/assistant messages, so 0 prompts. This is valid — display the header with zero prompts, don't crash.
+
+### M4: Live Timeline & Ticker
+
+- **`classifyToolName` was renamed to `ClassifyToolName` (exported)** to allow the UI package to classify tool names from progress line content blocks for the ticker. Any new callers outside `parser` must use the exported name.
+- **`parentToolUseID` is a top-level field on progress lines**, not nested inside `data`. It's a sibling of `type`, `data`, `uuid`, etc. The `agentId` is inside `data`.
+- **Progress line embedded messages are double-nested.** Structure is `data.message.message.content[]`. The outer `message` has `type` (user/assistant) and the inner `message` has the actual API message with `content`, `model`, `usage`, etc.
+- **Incremental rebuild must re-classify the active prompt on each update.** Clear `prompt.Warnings` before calling `classifyPrompt()` to avoid duplicate warnings accumulating across incremental rebuilds.
+- **`IsLive` = watcher running AND last prompt unsealed.** Not just "watcher running" — completed sessions where all prompts are sealed should not show the live dot even if the watcher is technically watching.
+- **Duration outliers are NOT recomputed during incremental rebuilds.** They require all prompts with final EndTimes and are only meaningful for completed sessions. The initial `BuildSession` computes them; `RebuildActivePrompt` does not.
+- **Agent color assignments persist across prompt resets.** When `ticker.ResetForNewPrompt()` clears entries and loop counts, the `agentColors` map is preserved so agents keep consistent colors across prompts.
+- **Ticker entries are separate from `prompt.ToolCalls`.** The ticker tracks its own entries (including subagent tool calls from progress lines). `prompt.ToolCalls` remains parent-session direct tool calls only. This preserves the data model for M5's agent tree builder.
+- **`tea.Tick` lifecycle.** The 1-second tick starts on `MsgReplayDone` for live sessions and self-reissues each time. It naturally stops when the user navigates away (view changes) or `IsLive` becomes false. No explicit stop needed.
+- **`isHumanTurn` was renamed to `IsHumanTurn` (exported)** so the watcher can reuse the same logic. The watcher adds its own `evt.Type == "user"` guard since it sees all event types; the builder already switches on type before calling.
+- **`RebuildActivePrompt` receives only new events, not the full accumulated slice.** After `MsgReplayDone`, `a.events` is freed. Each `MsgNewEvents` batch is passed directly with `startIdx=0`. This prevents unbounded memory growth during long live sessions.
+- **Zero-value Ticker is safe.** `Push()` and `AgentColor()` defensively initialize nil maps. This handles the edge case where a session starts with 0 prompts and the ticker wasn't initialized via `NewTicker()`.
+- **Negative terminal dimensions.** `setSize()` clamps `detailWidth` and `contentHeight` to `≥ 1` to prevent layout corruption in very small terminals.

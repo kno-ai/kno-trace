@@ -61,17 +61,10 @@ func (t *Tailer) Start() func() {
 }
 
 // isHumanTurnEvent checks if a parsed event is a human turn (prompt boundary).
+// Delegates to parser.IsHumanTurn for the core logic, with an additional type guard
+// since the watcher sees all event types (not just "user").
 func isHumanTurnEvent(evt *parser.RawEvent) bool {
-	if evt.Type != "user" || evt.Message == nil || evt.SourceToolAssistantUUID != "" {
-		return false
-	}
-	if evt.Message.HumanText != "" {
-		return true
-	}
-	if len(evt.Message.Content) > 0 && evt.Message.Content[0].Type == "text" {
-		return true
-	}
-	return false
+	return evt.Type == "user" && parser.IsHumanTurn(evt)
 }
 
 func (t *Tailer) run(stop <-chan struct{}) {

@@ -43,7 +43,7 @@ func BuildSession(events []*RawEvent, cfg *config.Config) *model.Session {
 			if evt.Message == nil {
 				continue
 			}
-			if isHumanTurn(evt) {
+			if IsHumanTurn(evt) {
 				// Seal previous prompt.
 				if currentPrompt != nil {
 					currentPrompt.EndTime = evt.Timestamp
@@ -119,7 +119,9 @@ func BuildSession(events []*RawEvent, cfg *config.Config) *model.Session {
 				}
 				tc := buildToolCall(block, evt.Timestamp, &agentCounter)
 				currentPrompt.ToolCalls = append(currentPrompt.ToolCalls, tc)
-				toolCallsByID[tc.ID] = tc
+				if tc.ID != "" {
+					toolCallsByID[tc.ID] = tc
+				}
 
 				// If this is an Agent tool_use, create an AgentNode.
 				if tc.Type == model.ToolAgent {
@@ -161,9 +163,10 @@ func BuildSession(events []*RawEvent, cfg *config.Config) *model.Session {
 	return s
 }
 
-// isHumanTurn checks if a user event is a human turn (not a tool result).
+// IsHumanTurn checks if a user event is a human turn (not a tool result).
 // Human turns have message.content as a string, or content[0].type == "text".
-func isHumanTurn(evt *RawEvent) bool {
+// Exported so the watcher can reuse the same logic without duplication.
+func IsHumanTurn(evt *RawEvent) bool {
 	if evt.Message == nil {
 		return false
 	}
@@ -200,7 +203,7 @@ func buildToolCall(block ContentBlock, timestamp time.Time, agentCounter *int) *
 		ExitCode:  -1, // Default: not available.
 	}
 
-	tc.Type, tc.MCPServerName, tc.MCPToolName = classifyToolName(block.ToolName)
+	tc.Type, tc.MCPServerName, tc.MCPToolName = ClassifyToolName(block.ToolName)
 
 	// Parse tool-specific input fields.
 	if len(block.ToolInput) > 0 {
@@ -374,6 +377,183 @@ func populateAgentResult(evt *RawEvent, prompt *model.Prompt, toolUseID string) 
 	}
 }
 
+// RebuildActivePrompt incrementally updates the session from new events.
+// It processes events starting at startIdx, updating the active (last) prompt
+// in place and creating new prompts when human turns are encountered.
+// toolCallsByID is carried across calls — the caller owns it.
+// lastBranch is the most recent git branch from prior events (caller tracks it).
+// Returns the updated lastBranch and indices of any newly sealed prompts.
+func RebuildActivePrompt(s *model.Session, events []*RawEvent, startIdx int, cfg *config.Config, toolCallsByID map[string]*model.ToolCall, lastBranch string, agentCounter int) (string, []int, int) {
+	if startIdx >= len(events) {
+		return lastBranch, nil, agentCounter
+	}
+
+	var sealedIdxs []int
+
+	// Get or create the active prompt.
+	var currentPrompt *model.Prompt
+	if len(s.Prompts) > 0 {
+		currentPrompt = s.Prompts[len(s.Prompts)-1]
+	}
+
+	for i := startIdx; i < len(events); i++ {
+		evt := events[i]
+
+		// Update session-level timestamps.
+		if !evt.Timestamp.IsZero() {
+			s.EndTime = evt.Timestamp
+		}
+
+		switch evt.Type {
+		case "user":
+			if evt.Message == nil {
+				continue
+			}
+			if IsHumanTurn(evt) {
+				// Seal previous prompt.
+				if currentPrompt != nil {
+					currentPrompt.EndTime = evt.Timestamp
+					// Re-classify the sealed prompt (loop detection, context warnings).
+					currentPrompt.Warnings = nil
+					classifyPrompt(currentPrompt, cfg)
+					sealedIdxs = append(sealedIdxs, currentPrompt.Index)
+				}
+
+				currentPrompt = &model.Prompt{
+					Index:     len(s.Prompts),
+					StartTime: evt.Timestamp,
+					HumanText: evt.Message.HumanText,
+				}
+				s.Prompts = append(s.Prompts, currentPrompt)
+
+				// Track git branch transitions.
+				if evt.GitBranch != "" {
+					if lastBranch != "" && evt.GitBranch != lastBranch {
+						currentPrompt.BranchTransition = model.BranchTransition{
+							From: lastBranch,
+							To:   evt.GitBranch,
+						}
+					}
+					lastBranch = evt.GitBranch
+				}
+			} else if isToolResult(evt) && currentPrompt != nil {
+				pairToolResult(evt, toolCallsByID, currentPrompt)
+			}
+
+		case "assistant":
+			if evt.Message == nil || currentPrompt == nil {
+				continue
+			}
+
+			// Track branch transitions.
+			if evt.GitBranch != "" {
+				if lastBranch != "" && evt.GitBranch != lastBranch {
+					currentPrompt.BranchTransition = model.BranchTransition{
+						From: lastBranch,
+						To:   evt.GitBranch,
+					}
+				}
+				lastBranch = evt.GitBranch
+			}
+
+			// Extract model and usage.
+			if evt.Message.Model != "" {
+				currentPrompt.ModelName = evt.Message.Model
+				if s.ModelName == "" {
+					s.ModelName = evt.Message.Model
+				}
+			}
+			if evt.Message.Usage != nil {
+				currentPrompt.TokensIn = evt.Message.Usage.InputTokens
+				currentPrompt.TokensOut = evt.Message.Usage.OutputTokens
+				currentPrompt.CacheRead = evt.Message.Usage.CacheReadInputTokens
+				currentPrompt.CacheCreate = evt.Message.Usage.CacheCreationInputTokens
+
+				if evt.Message.Usage.InputTokens > 0 && currentPrompt.ModelName != "" {
+					windowSize := cfg.ContextWindowSize(currentPrompt.ModelName)
+					if windowSize > 0 {
+						currentPrompt.ContextPct = int(float64(evt.Message.Usage.InputTokens) / float64(windowSize) * 100)
+					}
+				}
+			}
+
+			// Extract tool_use blocks as ToolCalls.
+			for _, block := range evt.Message.Content {
+				if block.Type != "tool_use" {
+					continue
+				}
+				tc := buildToolCall(block, evt.Timestamp, &agentCounter)
+				currentPrompt.ToolCalls = append(currentPrompt.ToolCalls, tc)
+				if tc.ID != "" {
+					toolCallsByID[tc.ID] = tc
+				}
+
+				if tc.Type == model.ToolAgent {
+					agent := &model.AgentNode{
+						ToolUseID:       tc.ID,
+						Label:           tc.AgentDescription,
+						SubagentType:    tc.SubagentType,
+						TaskDescription: tc.AgentDescription,
+						TaskPrompt:      tc.AgentPrompt,
+						ParentPromptIdx: currentPrompt.Index,
+						StartTime:       evt.Timestamp,
+						Status:          model.AgentRunning,
+					}
+					currentPrompt.Agents = append(currentPrompt.Agents, agent)
+				}
+			}
+
+		case "system":
+			if evt.Subtype == "compact_boundary" && currentPrompt != nil {
+				s.CompactAt = append(s.CompactAt, currentPrompt.Index)
+			}
+		}
+	}
+
+	// Classify the active prompt (live — warnings may update on next call).
+	if currentPrompt != nil {
+		currentPrompt.Warnings = nil
+		classifyPrompt(currentPrompt, cfg)
+	}
+
+	// Update IsLive: session is live if last prompt has no EndTime.
+	if len(s.Prompts) > 0 {
+		last := s.Prompts[len(s.Prompts)-1]
+		s.IsLive = last.EndTime.IsZero()
+	}
+
+	return lastBranch, sealedIdxs, agentCounter
+}
+
+// BuildToolCallsByID creates the tool call ID map from an existing session.
+// Used to initialize the map after the initial BuildSession, before switching
+// to incremental updates.
+func BuildToolCallsByID(s *model.Session) map[string]*model.ToolCall {
+	m := make(map[string]*model.ToolCall)
+	for _, p := range s.Prompts {
+		for _, tc := range p.ToolCalls {
+			if tc.ID != "" {
+				m[tc.ID] = tc
+			}
+		}
+	}
+	return m
+}
+
+// CountAgents counts agent tool calls across all prompts. Used to initialize
+// the agent numbering sequence after BuildSession, before incremental updates.
+func CountAgents(s *model.Session) int {
+	count := 0
+	for _, p := range s.Prompts {
+		for _, tc := range p.ToolCalls {
+			if tc.Type == model.ToolAgent {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // computeDurationOutliers flags prompts with duration >2σ above mean.
 // Only computed when ≥5 prompts exist.
 func computeDurationOutliers(s *model.Session) {
@@ -429,9 +609,9 @@ func computeDurationOutliers(s *model.Session) {
 	}
 }
 
-// classifyToolName maps a tool name string to a ToolType.
+// ClassifyToolName maps a tool name string to a ToolType.
 // For MCP tools, extracts server and tool names.
-func classifyToolName(name string) (model.ToolType, string, string) {
+func ClassifyToolName(name string) (model.ToolType, string, string) {
 	// MCP tools: mcp__<server>__<tool>
 	if strings.HasPrefix(name, "mcp__") {
 		parts := strings.SplitN(name, "__", 3)

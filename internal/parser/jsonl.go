@@ -87,9 +87,14 @@ type CompactMeta struct {
 }
 
 // ProgressData holds parsed progress line data.
+// For agent_progress lines, ToolUseBlocks contains tool_use blocks from the
+// embedded subagent assistant message — used by the live ticker for real-time
+// agent attribution without waiting for tool_result.
 type ProgressData struct {
-	Type    string // "agent_progress", "hook_progress", etc.
-	AgentID string
+	Type            string         // "agent_progress", "hook_progress", etc.
+	AgentID         string
+	ParentToolUseID string         // top-level field linking to the Agent tool_use that spawned this agent
+	ToolUseBlocks   []ContentBlock // tool_use blocks from embedded assistant message (if any)
 }
 
 // ParseFile reads a JSONL file and returns all parsed events.
@@ -284,6 +289,13 @@ func parseLine(line []byte) (*RawEvent, error) {
 		parseSystemLine(raw, evt)
 	case "progress":
 		parseProgressLine(raw, evt)
+		// parentToolUseID is a top-level field on progress lines, linking to the
+		// Agent tool_use block that spawned this subagent.
+		if evt.ProgressData != nil {
+			if v, ok := raw["parentToolUseID"]; ok {
+				json.Unmarshal(v, &evt.ProgressData.ParentToolUseID)
+			}
+		}
 	case "queue-operation", "file-history-snapshot", "last-prompt":
 		// Known non-message types — return event for timestamp tracking but no message.
 	default:
@@ -451,6 +463,8 @@ func parseSystemLine(raw map[string]json.RawMessage, evt *RawEvent) {
 }
 
 // parseProgressLine extracts agent progress data.
+// For agent_progress lines, also extracts tool_use blocks from the embedded
+// subagent assistant message for real-time ticker display.
 func parseProgressLine(raw map[string]json.RawMessage, evt *RawEvent) {
 	dataRaw, ok := raw["data"]
 	if !ok {
@@ -468,7 +482,83 @@ func parseProgressLine(raw map[string]json.RawMessage, evt *RawEvent) {
 	if v, ok := dataMap["agentId"]; ok {
 		json.Unmarshal(v, &pd.AgentID)
 	}
+
+	// Extract tool_use blocks from embedded assistant messages.
+	// Progress lines embed full subagent messages at data.message.message.content[].
+	if pd.Type == "agent_progress" {
+		if msgRaw, ok := dataMap["message"]; ok {
+			pd.ToolUseBlocks = extractProgressToolUseBlocks(msgRaw)
+		}
+	}
+
 	evt.ProgressData = pd
+}
+
+// extractProgressToolUseBlocks navigates the embedded message structure in a
+// progress line and returns any tool_use content blocks found.
+// Structure: data.message = { type: "assistant", message: { content: [...] } }
+func extractProgressToolUseBlocks(msgRaw json.RawMessage) []ContentBlock {
+	var outer map[string]json.RawMessage
+	if err := json.Unmarshal(msgRaw, &outer); err != nil {
+		return nil
+	}
+
+	// Only extract from assistant-type embedded messages (those have tool_use blocks).
+	var msgType string
+	if v, ok := outer["type"]; ok {
+		json.Unmarshal(v, &msgType)
+	}
+	if msgType != "assistant" {
+		return nil
+	}
+
+	// Navigate to the inner message object.
+	innerRaw, ok := outer["message"]
+	if !ok {
+		return nil
+	}
+	var innerMap map[string]json.RawMessage
+	if err := json.Unmarshal(innerRaw, &innerMap); err != nil {
+		return nil
+	}
+
+	contentRaw, ok := innerMap["content"]
+	if !ok {
+		return nil
+	}
+
+	// Parse content blocks, keeping only tool_use blocks.
+	var blocks []json.RawMessage
+	if err := json.Unmarshal(contentRaw, &blocks); err != nil {
+		return nil
+	}
+
+	var toolUses []ContentBlock
+	for _, blockRaw := range blocks {
+		var blockMap map[string]json.RawMessage
+		if err := json.Unmarshal(blockRaw, &blockMap); err != nil {
+			continue
+		}
+		var blockType string
+		if v, ok := blockMap["type"]; ok {
+			json.Unmarshal(v, &blockType)
+		}
+		if blockType != "tool_use" {
+			continue
+		}
+		block := ContentBlock{Type: "tool_use"}
+		if v, ok := blockMap["id"]; ok {
+			json.Unmarshal(v, &block.ToolUseID)
+		}
+		if v, ok := blockMap["name"]; ok {
+			json.Unmarshal(v, &block.ToolName)
+		}
+		if v, ok := blockMap["input"]; ok {
+			block.ToolInput = v
+		}
+		toolUses = append(toolUses, block)
+	}
+	return toolUses
 }
 
 // sortEventsByTimestamp sorts events in-place by timestamp, preserving

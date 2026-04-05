@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -22,6 +24,16 @@ const (
 	viewTimeline          // full timeline view
 )
 
+// tickMsg fires every second during live sessions for elapsed time updates.
+type tickMsg time.Time
+
+// tickCmd returns a Cmd that sends a tickMsg after 1 second.
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
 // App is the root Bubbletea model for kno-trace.
 type App struct {
 	view        viewMode
@@ -36,6 +48,11 @@ type App struct {
 	stopWatcher func()
 	width       int
 	height      int
+
+	// Live session state.
+	liveToolCallsByID map[string]*model.ToolCall // carried across incremental builds
+	lastBranch        string                      // most recent git branch, carried across incremental calls
+	agentCounter      int                          // agent numbering sequence, carried across incremental calls
 }
 
 // NewApp creates the root model starting at the session picker.
@@ -135,6 +152,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep listening for more watcher messages.
 		return a, tea.Batch(cmd, waitForWatcher(msg.ch))
 
+	case tickMsg:
+		// Re-issue tick only if we're in a live timeline view.
+		if a.view == viewTimeline && a.session != nil && a.session.IsLive {
+			return a, tickCmd()
+		}
+		return a, nil
+
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			a.cleanup()
@@ -158,23 +182,163 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case watcher.MsgNewEvents:
-		a.events = append(a.events, msg.Events...)
-		// Don't rebuild session here — just accumulate events.
-		// Full build happens on MsgReplayDone.
+		// If we're already in the timeline (live mode), do incremental rebuild.
+		// Only pass the new events to avoid unbounded accumulation.
+		if a.view == viewTimeline && a.session != nil {
+			var branch string
+			var sealedIdxs []int
+			branch, sealedIdxs, a.agentCounter = parser.RebuildActivePrompt(
+				a.session, msg.Events, 0, a.cfg, a.liveToolCallsByID, a.lastBranch, a.agentCounter)
+			a.lastBranch = branch
+
+			// Feed new events to the ticker.
+			tickerEntries := extractTickerEntries(msg.Events)
+			a.timeline.ticker.Push(tickerEntries)
+
+			// Update the timeline's prompt list and session reference.
+			a.timeline.syncSession(a.session)
+
+			// Auto-follow on new sealed prompts.
+			if len(sealedIdxs) > 0 {
+				a.timeline.ticker.ResetForNewPrompt()
+				a.timeline.onPromptSealed()
+			}
+		} else {
+			// During loading: accumulate for initial BuildSession.
+			a.events = append(a.events, msg.Events...)
+		}
+
 	case watcher.MsgReplayDone:
-		// Replay complete — stop the watcher (option 2: M4 will remove this).
-		a.cleanup()
+		// Initial replay complete — build the full session.
 		a.rebuildSession()
 		if a.session != nil {
+			// Initialize live state.
+			a.liveToolCallsByID = parser.BuildToolCallsByID(a.session)
+			a.agentCounter = parser.CountAgents(a.session)
+
+			// Extract last known git branch for incremental branch detection.
+			for i := len(a.events) - 1; i >= 0; i-- {
+				if a.events[i].GitBranch != "" {
+					a.lastBranch = a.events[i].GitBranch
+					break
+				}
+			}
+			// Free replay events — no longer needed after full build.
+			a.events = nil
+
+			// Determine IsLive: last prompt unsealed means session is likely still active.
+			if len(a.session.Prompts) > 0 {
+				last := a.session.Prompts[len(a.session.Prompts)-1]
+				a.session.IsLive = last.EndTime.IsZero()
+			}
+
 			a.timeline = newTimeline(a.session)
 			a.timeline.setSize(a.width, a.height)
+
+			// If live, enable auto-follow and start the tick.
+			if a.session.IsLive {
+				a.timeline.autoFollow = true
+				a.timeline.isLive = true
+				a.timeline.ticker = NewTicker(a.cfg.LoopDetectionThreshold)
+				a.timeline.followLatest()
+			}
 		}
 		a.view = viewTimeline
+
+		// Start tick for live sessions — do NOT stop the watcher.
+		if a.session != nil && a.session.IsLive {
+			return tickCmd()
+		}
+		// For completed sessions, stop the watcher (no new data expected).
+		a.cleanup()
+
 	case watcher.MsgPromptSealed:
-		// Don't rebuild the full session on every sealed prompt (O(n²)).
-		// The loading screen uses event count as a progress indicator.
+		// During loading: used as progress indicator (M3 behavior).
+		// During live timeline: handled via MsgNewEvents + RebuildActivePrompt.
+
+	case watcher.MsgPromptUpdate:
+		// During live timeline: handled via MsgNewEvents.
+
+	case watcher.MsgSessionFileDeleted:
+		if a.session != nil {
+			a.session.IsLive = false
+		}
+		a.timeline.isLive = false
+		a.statusMsg = "Session file removed — press P for picker or q to quit"
+		a.cleanup()
 	}
 	return nil
+}
+
+// extractTickerEntries pulls TickerEntry values from new raw events.
+// Extracts tool_use blocks from assistant messages and from progress lines.
+func extractTickerEntries(events []*parser.RawEvent) []TickerEntry {
+	var entries []TickerEntry
+	for _, evt := range events {
+		switch evt.Type {
+		case "assistant":
+			if evt.Message == nil {
+				continue
+			}
+			for _, block := range evt.Message.Content {
+				if block.Type != "tool_use" {
+					continue
+				}
+				entries = append(entries, tickerEntryFromBlock(block, evt.Timestamp, ""))
+			}
+
+		case "progress":
+			if evt.ProgressData == nil || evt.ProgressData.Type != "agent_progress" {
+				continue
+			}
+			for _, block := range evt.ProgressData.ToolUseBlocks {
+				entries = append(entries, tickerEntryFromBlock(
+					block, evt.Timestamp, evt.ProgressData.AgentID))
+			}
+		}
+	}
+	return entries
+}
+
+// tickerEntryFromBlock creates a TickerEntry from a parsed content block.
+func tickerEntryFromBlock(block parser.ContentBlock, ts time.Time, agentID string) TickerEntry {
+	toolType, _, _ := parser.ClassifyToolName(block.ToolName)
+	return TickerEntry{
+		ToolType:  toolType,
+		Path:      extractToolPath(block),
+		AgentID:   agentID,
+		Timestamp: ts,
+	}
+}
+
+// extractToolPath extracts the most useful display path from a tool_use input.
+func extractToolPath(block parser.ContentBlock) string {
+	if len(block.ToolInput) == 0 {
+		return ""
+	}
+	// Try common path fields.
+	type pathInput struct {
+		FilePath string `json:"file_path"`
+		Pattern  string `json:"pattern"`
+		Command  string `json:"command"`
+	}
+	var pi pathInput
+	if err := json.Unmarshal(block.ToolInput, &pi); err == nil {
+		if pi.FilePath != "" {
+			return pi.FilePath
+		}
+		if pi.Pattern != "" {
+			return pi.Pattern
+		}
+		if pi.Command != "" {
+			// Truncate long commands for display.
+			if len(pi.Command) > 50 {
+				return pi.Command[:50] + "..."
+			}
+			return pi.Command
+		}
+	}
+	return ""
 }
 
 func (a *App) rebuildSession() {
@@ -287,6 +451,9 @@ func (a *App) resetSession() {
 	a.cleanup()
 	a.events = nil
 	a.session = nil
+	a.liveToolCallsByID = nil
+	a.lastBranch = ""
+	a.agentCounter = 0
 }
 
 // ensurePickerLoaded populates the picker with sessions if it's empty.

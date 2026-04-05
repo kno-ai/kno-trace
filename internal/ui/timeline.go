@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -22,6 +23,11 @@ type timelineModel struct {
 	filtering    bool
 	filter       string
 	filteredIdxs []int // indices into session.Prompts; nil = show all
+
+	// Live session state.
+	isLive     bool   // mirrors session.IsLive
+	autoFollow bool   // true = cursor tracks latest prompt
+	ticker     Ticker // live tool call ticker
 }
 
 func newTimeline(session *model.Session) timelineModel {
@@ -41,10 +47,14 @@ func (t *timelineModel) setSize(w, h int) {
 	if listWidth < 25 {
 		listWidth = min(25, w)
 	}
-	detailWidth := w - listWidth - 3 // 3 for divider + padding
+	detailWidth := max(1, w-listWidth-3) // 3 for divider + padding
 
-	// Reserve 3 lines for stats bar + padding.
-	contentHeight := h - 3
+	// Reserve lines for bottom: stats bar + padding + ticker (when live).
+	reserved := 3
+	if t.isLive {
+		reserved = 4 // extra line for ticker strip
+	}
+	contentHeight := max(1, h-reserved)
 
 	t.list.Width = listWidth
 	t.list.Height = contentHeight
@@ -82,6 +92,8 @@ func (t timelineModel) updateNormal(msg tea.KeyMsg) (timelineModel, tea.Cmd) {
 	// Reset detail scroll when cursor moves.
 	if t.list.Cursor != prevCursor {
 		t.detail.Offset = 0
+		// Disengage auto-follow on manual navigation.
+		t.autoFollow = false
 	}
 
 	return t, nil
@@ -171,9 +183,50 @@ func (t *timelineModel) promptMatchesFilter(p *model.Prompt, lower string) bool 
 	return false
 }
 
+// syncSession updates the timeline's prompt list and session reference after
+// an incremental rebuild. Preserves cursor position when possible.
+func (t *timelineModel) syncSession(s *model.Session) {
+	t.session = s
+	t.isLive = s.IsLive
+
+	// If no filter active, sync prompt list directly.
+	if t.filteredIdxs == nil {
+		t.list.Prompts = s.Prompts
+		// Update compact set.
+		compactSet := make(map[int]bool)
+		for _, idx := range s.CompactAt {
+			compactSet[idx] = true
+		}
+		t.list.CompactAt = compactSet
+	}
+
+	// Recalculate layout (ticker visibility may have changed).
+	t.setSize(t.width, t.height)
+}
+
+// onPromptSealed is called when a new prompt boundary is detected during live
+// tailing. Re-engages auto-follow and jumps to the latest prompt.
+func (t *timelineModel) onPromptSealed() {
+	t.autoFollow = true
+	t.followLatest()
+}
+
+// followLatest moves the cursor to the last prompt and scrolls to show it.
+func (t *timelineModel) followLatest() {
+	if len(t.list.Prompts) == 0 {
+		return
+	}
+	t.list.Cursor = len(t.list.Prompts) - 1
+	t.list.ensureVisible()
+	t.detail.Offset = 0
+}
+
 // View renders the full timeline layout.
 func (t timelineModel) View() string {
 	if t.session == nil || len(t.session.Prompts) == 0 {
+		if t.session != nil && t.session.IsLive {
+			return EmptyStateStyle.Render("Waiting for first prompt...")
+		}
 		return EmptyStateStyle.Render("No prompts in session")
 	}
 
@@ -194,7 +247,7 @@ func (t timelineModel) View() string {
 
 	// Right pane: detail for selected prompt.
 	selected := t.list.SelectedPrompt()
-	rightContent := t.detail.View(selected)
+	rightContent := t.detail.View(selected, t.isLive)
 
 	// Divider.
 	divider := lipgloss.NewStyle().
@@ -208,10 +261,16 @@ func (t timelineModel) View() string {
 		rightContent,
 	)
 
+	// Ticker strip (only for live sessions with activity).
+	tickerLine := ""
+	if t.isLive && t.ticker.HasEntries() {
+		tickerLine = "  " + t.ticker.View(t.width-4, time.Now()) + "\n"
+	}
+
 	// Stats bar at bottom.
 	stats := t.statsBar()
 
-	return layout + "\n" + stats
+	return layout + "\n" + tickerLine + stats
 }
 
 func (t timelineModel) statsBar() string {
@@ -220,6 +279,12 @@ func (t timelineModel) statsBar() string {
 	}
 
 	var parts []string
+
+	// Live indicator dot.
+	if t.isLive {
+		liveDot := lipgloss.NewStyle().Foreground(ColorBrandTeal).Bold(true).Render("●")
+		parts = append(parts, liveDot)
+	}
 
 	// Session name.
 	parts = append(parts, SelectedStyle.Render(t.session.ProjectName))
@@ -267,6 +332,27 @@ func (t timelineModel) statsBar() string {
 			parts = append(parts, MutedStyle.Foreground(ColorYellow).Render(ctxStr))
 		} else {
 			parts = append(parts, MutedStyle.Render(ctxStr))
+		}
+	}
+
+	// Agent activity indicator (live sessions only).
+	if t.isLive && len(t.session.Prompts) > 0 {
+		activePrompt := t.session.Prompts[len(t.session.Prompts)-1]
+		var running, done int
+		for _, a := range activePrompt.Agents {
+			switch a.Status {
+			case model.AgentRunning:
+				running++
+			case model.AgentSucceeded, model.AgentFailed:
+				done++
+			}
+		}
+		if running > 0 {
+			agentStr := fmt.Sprintf("⬡ %d active", running)
+			if done > 0 {
+				agentStr += fmt.Sprintf(", %d done", done)
+			}
+			parts = append(parts, MutedStyle.Render(agentStr))
 		}
 	}
 
