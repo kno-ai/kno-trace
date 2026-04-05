@@ -1,6 +1,6 @@
-# M7: Release Polish & Distribution
+# M8: Release Polish & Distribution
 
-**Prerequisites:** Read [spec/README.md](../README.md) (core spec). M6 must be complete (all views working).
+**Prerequisites:** Read [spec/README.md](../README.md) (core spec). M7 must be complete (all views working).
 
 **Goal:** Ship the control room. v1.0.0 — `brew install kno-trace` works.
 
@@ -18,6 +18,13 @@
 - Context pressure nudge:
   - Ticker strip message when `ContextPct > config.context_nudge_pct`: `context 81% — consider /compact or new session`
   - This fires only when `ContextPct > 0` (i.e., token data available)
+- Context pressure sparkline:
+  - `internal/ui/components/sparkline.go` — a compact sparkline renderer using Unicode block characters (▁▂▃▄▅▆▇█)
+  - Renders context% trajectory across all prompts as a sparkline in the stats bar (right of context% number)
+  - Compaction points marked with a distinct glyph (`↓` or color change) on the sparkline
+  - Width: adapts to available terminal width, max ~40 characters
+  - Only shown when ≥3 prompts have context% data
+  - Answers "is my context climbing steadily, spiking, or recovering after compactions?" at a glance
 - Polish:
   - All views respond correctly to terminal resize (propagate `tea.WindowSizeMsg`)
   - Empty states with clear messages for all views
@@ -37,6 +44,9 @@
 - `brew install` works on macOS
 - Interrupted badge correct
 - Context nudge fires only when token data available and exceeds configured threshold
+- Context sparkline renders correctly with ≥3 data points; hidden with fewer
+- Compaction points visible on sparkline
+- Sparkline adapts to terminal width
 - Help overlay complete and dismissible
 - `g`/`G` navigation works
 - All empty states graceful

@@ -1,6 +1,6 @@
-# M6: Diff View
+# M7: Diff View
 
-**Prerequisites:** Read [spec/README.md](../README.md) (core spec) and `SCHEMA.md`. M5 must be complete (replay engine and heatmap working).
+**Prerequisites:** Read [spec/README.md](../README.md) (core spec) and `SCHEMA.md`. M6 must be complete (replay engine and heatmap working).
 
 **Goal:** The before/after comparison — full codebase diff between any two points in the session.
 
@@ -14,8 +14,8 @@
 
 - `internal/ui/diff.go`:
   - From/to prompt selectors at top
-  - On selection: enumerate all files with Write/Edit ops touched in either range
-  - For each file: `replay.Engine.GetContentAt(path, from)` and `GetContentAt(path, to)`
+  - On selection: enumerate all files with Write/Edit ops touched in either range (including agent file modifications — the replay engine already includes these from M6)
+  - For each file: `replay.Engine.GetContentAt(path, from)` and `GetContentAt(path, to)` — these naturally incorporate agent modifications since the replay engine's file history includes agent tool calls
   - Render unified diff via `replay.diff.Compute()`
   - File headers (blue), hunk headers (purple), add lines (teal), del lines (red), context (muted)
   - Summary: `+N -M across K files`
@@ -34,7 +34,7 @@
 
 ## Acceptance Criteria
 
-- Diff view correct for all file changes between two selected prompts
+- Diff view correct for all file changes between two selected prompts (including changes made by agents)
 - Bash presence note shown when any `ToolBash` in selected range
 - `m` mark workflow works as specified
 - `[A]` badge visible on marked prompt

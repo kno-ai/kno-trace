@@ -14,10 +14,10 @@
 
 - Project scaffold: Go modules, directory structure per Architecture
   - Go module name: `github.com/<GITHUB_USERNAME>/kno-trace` — **replace `<GITHUB_USERNAME>` with the actual GitHub username before running `go mod init`**
-  - Go version: `go 1.21` in go.mod
+  - Go version: `go 1.24` or later in go.mod (required by Bubbletea)
   - Directory structure: create all directories listed in the Architecture section, even those used in later milestones, so the tree is established from the start
 - `internal/model/types.go` — complete data model as specified in core spec
-- `internal/discovery/` — hash.go, scan.go, meta.go:
+- `internal/discovery/` — pathenc.go (project path encoding: slash-to-dash), scan.go, meta.go:
   - `SessionMeta` populated from first line (StartTime) and last ~5 lines (EndTime) of each JSONL
   - `FileSizeBytes` from `os.Stat`
   - `Duration` from `EndTime - StartTime`

@@ -15,6 +15,7 @@
 ### Step 1 — Explore real JSONL files
 
 List `~/.claude/projects/` and identify sessions covering as many of these as available:
+
 - A simple session (no agents, Write/Edit/Read/Bash)
 - A session with at least one subagent (look for `"name":"Task"` in tool_use blocks)
 - A session with parallel subagents (multiple Task calls before any tool_result returns)
@@ -22,6 +23,7 @@ List `~/.claude/projects/` and identify sessions covering as many of these as av
 - A session with MCP tool calls (tool_use names not in the known list)
 
 For each, confirm exact field names for:
+
 - The field distinguishing human turns from tool results (both have `role: "user"`)
 - Session/conversation ID field name
 - The field linking subagent messages to parent Task tool_use
@@ -43,21 +45,25 @@ Create `SCHEMA.md` in the project root using exactly this structure:
 ## Confirmed Field Names
 
 ### Human turn identification
+
 - Field path: message.content[0].type
 - Value that identifies a human turn (not tool result): [confirmed value]
 - Value that identifies a tool result: [confirmed value]
 
 ### Session / conversation ID
+
 - Field name: [exact field name]
 - Example value structure: [e.g., "uuid string" or "nested object"]
 
 ### Subagent parent linkage
+
 - Field name on child message that links to parent Task tool_use: [exact field name]
 - Field name on parent Task tool_use that child references: [exact field name]
 - Which message type carries this field: [e.g., "appears on user-turn messages from subagent"]
 - Example: [annotated JSON snippet showing parent Task and child linkage]
 
 ### Token usage
+
 - Input tokens field: [exact path, e.g., usage.input_tokens]
 - Output tokens field: [exact path, e.g., usage.output_tokens]
 - Cache read tokens field: [exact path, or "not present"]
@@ -65,23 +71,28 @@ Create `SCHEMA.md` in the project root using exactly this structure:
 - Which message type carries this field: [e.g., "assistant messages only"]
 
 ### Model name
+
 - Field name: [exact field name]
 - Example value: [e.g., "claude-sonnet-4-5"]
 
 ### Non-message metadata lines
+
 - [list any JSONL lines that are not user/assistant messages, with their structure]
 - [or "none observed"]
 
 ### /compact representation
+
 - [exact JSON structure of the compact message]
 - [or "not observed in available sessions"]
 
 ## Hash Algorithm
+
 - Algorithm: [e.g., "SHA256 of absolute project path, lowercase hex, full length"]
 - Metadata file present at hash directory: [yes/no ��� if yes, filename and structure]
 - Confirmed: project path [X] produces hash [Y] matching directory [Z]
 
 ## Schema Discrepancies vs SPEC.md
+
 - [list any field names that differ from what SPEC.md assumed]
 - [or "none — spec matches observed schema"]
 ```
@@ -91,6 +102,7 @@ Create `SCHEMA.md` in the project root using exactly this structure:
 Create `internal/testdata/` directory and populate it with fixtures from real sessions.
 
 **Anonymization rules — apply to every fixture:**
+
 - Human turn text: replace with a short bracketed description, e.g. `"[implement the parser]"`
 - File paths in tool inputs: replace with realistic Go-style paths, e.g. `"internal/foo/bar.go"`
 - Write tool `content` field: replace with `"// content redacted\n"`
@@ -103,12 +115,14 @@ Create `internal/testdata/` directory and populate it with fixtures from real se
 **Size limit:** Extract a maximum of 5 prompts per fixture. Use the earliest prompts that demonstrate the required characteristic.
 
 **Required fixtures:**
+
 - `simple.jsonl` — 3 prompts, no agents; must include at least one Write, one Edit, one Read, one Bash
 - `interrupted.jsonl` — any session where the last human turn has no following assistant turn
 
 **Conditional fixtures — create only if a real session exists; otherwise note absence in SCHEMA.md:**
-- `with_agent.jsonl` — 2 prompts, one containing a Task tool call with a subagent
-- `parallel_agents.jsonl` — 1 prompt containing 2 parallel Task calls that touch the same file path
+
+- `with_agent.jsonl` — 2 prompts, one containing an Agent tool call with a subagent. If a subagent JSONL file exists for this agent, include it as `with_agent/subagents/agent-a<agentId>.jsonl` (same anonymization rules) — M5 needs this for testing subagent file reading
+- `parallel_agents.jsonl` — 1 prompt containing 2 parallel Agent calls that touch the same file path. Include corresponding subagent JSONL files if available.
 - `mcp_calls.jsonl` — any session containing at least one MCP tool call
 - `with_compact.jsonl` — any session where `/compact` was used
 
@@ -119,6 +133,7 @@ Do not create synthetic fixtures. If a required fixture type (`simple.jsonl`, `i
 ## After completing M0 — STOP.
 
 Do not proceed to M1. Return control to the developer. The developer will:
+
 1. Review `SCHEMA.md` and compare against this spec
 2. Update the data model or parser notes in this spec if any field names differ
 3. Explicitly initiate M1 in a new session

@@ -59,6 +59,27 @@ kno-trace runs alongside Claude Code — it must never compete for resources.
 - **Config is a single file.** `~/.config/kno-trace/config.yaml`, resolved via `os.UserConfigDir()`. No environment variables overriding config, no multiple config locations, no config merging. One file, one source of truth.
 - **Config is forward-compatible.** Unknown keys are ignored. Removing a config key reverts to the default. The tool never fails because of a config key it doesn't recognize.
 
+## Resilience — Never Break on Unexpected Data
+
+Claude Code's JSONL format is not versioned, not documented by Anthropic, and will change without notice. kno-trace must be **reliable in the face of unexpected data**. This is a core design constraint, not a nice-to-have.
+
+**The rule: if the parser encounters anything it doesn't recognize, it skips it and continues. It never panics, never crashes, never hangs.**
+
+Specific defensive practices:
+- **Unknown line types** (`type` field not recognized): skip silently. Claude Code adds new line types regularly.
+- **Unknown tool names**: classify as `ToolOther`, display by name. Never fail because a tool isn't in the known list.
+- **Unknown content block types** (not `text`, `tool_use`, `thinking`): skip the block, process the rest of the message.
+- **Unknown system subtypes**: skip. Only process what we recognize (`turn_duration`, `compact_boundary`).
+- **Missing fields**: every field access must have a safe default. Missing `message` → skip the line. Missing `content` → empty list. Missing `usage` → zero tokens. Missing `model` → empty string. Missing `timestamp` → zero time. Missing `file_path` on a tool_use → empty string (don't display a path).
+- **Null values where objects expected**: treat `null` the same as missing. `content: null` → empty list. `usage: null` → zero tokens.
+- **Empty arrays**: `content: []` is valid — it means no content blocks. Never index into an array without checking length.
+- **Type mismatches**: `toolUseResult` can be a string, dict, list, null, or absent. Always check the type before accessing fields. Never assume it's a dict.
+- **Forward-compatible parsing**: use `json.RawMessage` or equivalent for fields we don't fully understand. Don't fail on unknown keys in any object.
+- **Circular references in agent trees**: guard against infinite recursion. Use a visited set or depth limit.
+- **Future-proofing**: write parsing code as "extract what I know, ignore what I don't" rather than "validate that the structure matches my expectations."
+
+**Test this explicitly.** The `edge_cases.jsonl` fixture contains malformed JSON, blank lines, and unexpected structures. Every parser code path should be exercised against it without panicking.
+
 ## Code Quality
 
 - **Comment classes, methods, and properties well** focusing on the "why" — why is this important, what is it responsible for, etc.

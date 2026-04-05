@@ -49,19 +49,19 @@ These are the concrete problems kno-trace solves. Every feature must trace back 
 
 A developer is running Claude Code and wants to see, prompt by prompt, what actions were taken — which files were written, edited, or read, what Bash commands ran, what agents were spawned. They want this in real time as Claude works, and they want to drill into any prompt for full detail.
 
-**Served by:** Timeline view (M3), live tail (M2), `--dump` (M2)
+**Served by:** Static timeline (M3), live timeline (M4), live tail (M2), `--dump` (M2)
 
 ### UC2: "What happened to this file?"
 
 A developer notices a file is in an unexpected state and wants to trace its complete history within the session — every read, write, and edit, in order, with diffs showing exactly what changed at each step.
 
-**Served by:** Heatmap file history (M5), inline mini-diffs (M5), snapshot reconstruction (M5)
+**Served by:** Heatmap file history (M6), inline mini-diffs (M6), snapshot reconstruction (M6)
 
 ### UC3: "What changed between then and now?"
 
 A developer wants to compare the state of all files at one point in the session versus another — a session-scoped diff that captures every intermediate state, not just git commits.
 
-**Served by:** Diff view (M6), `m` mark workflow (M6)
+**Served by:** Diff view (M7), `m` mark workflow (M7)
 
 ### UC4: "What are my agents doing right now?"
 
@@ -81,19 +81,19 @@ After agents complete, the developer needs:
 
 This use case should feel like watching multiple workers on a construction site from a control room. Not a post-mortem — a live feed.
 
-**Served by:** Live ticker with agent attribution (M3), agent activity in stats bar (M3), agent tree (M4), swimlane with live updates (M4), agent detail expansion (M4)
+**Served by:** Live ticker with agent attribution (M4), agent activity in stats bar (M4), agent tree (M5), swimlane with live updates (M5), agent detail expansion (M5)
 
 ### UC5: "Is my context filling up?"
 
 A developer wants to monitor context window usage across a session — seeing when it's getting high, when `/compact` was used, and whether they should start a new session. They want this as a passive indicator, not something they have to check.
 
-**Served by:** Context% badges (M3), context nudge in ticker (M7), compact markers (M3)
+**Served by:** Context% badges (M3), context nudge in ticker (M8), compact markers (M3)
 
 ### UC6: "Which files are getting thrashed?"
 
 A developer suspects Claude is repeatedly modifying the same files and wants to identify hot spots — files with disproportionate edit activity — to understand whether the session is making progress or spinning.
 
-**Served by:** Heatmap view (M5), HeatScore intensity bars (M5), `/` file search (M5)
+**Served by:** Heatmap view (M6), HeatScore intensity bars (M6), `/` file search (M6)
 
 ### UC7: "Let me quickly check a past session"
 
@@ -115,7 +115,7 @@ A developer wants to review what happened in an earlier Claude Code session — 
 - No Claude Code API integration — only file-based observation
 - No Bash command risk classification — Bash commands are shown as-is; risk assessment is heuristic and belongs in a future version
 - No agent retry detection — detecting "similar" task descriptions is heuristic; not in v1
-- File state reconstruction reflects only Write/Edit/MultiEdit tool calls. Files modified by MCP tools or external processes during the session are not captured in the reconstruction — the diff view will note when Bash commands were present in a range
+- File state reconstruction reflects only Write/Edit tool calls. Files modified by Bash, PowerShell, NotebookEdit, MCP tools, or external processes are not captured — the diff view notes when these tools were present in a range
 
 ---
 
@@ -125,7 +125,7 @@ All decisions are final. Do not substitute.
 
 | Layer | Choice | Reason |
 |---|---|---|
-| Language | Go 1.21+ | Single static binary, trivial cross-compilation, strong concurrency |
+| Language | Go 1.24+ | Single static binary, trivial cross-compilation, strong concurrency |
 | TUI framework | [Bubbletea](https://github.com/charmbracelet/bubbletea) | Elm-architecture TUI, mature, widely used |
 | Styling | [Lipgloss](https://github.com/charmbracelet/lipgloss) | ANSI color, borders, layout for Bubbletea |
 | Components | [Bubbles](https://github.com/charmbracelet/bubbles) | viewport, list, textinput — do not rebuild these |
@@ -233,16 +233,41 @@ The `<hash>` is derived from the absolute project path. The exact algorithm must
 | `Write` | `path`, `content` | Full file content — complete snapshot |
 | `Read` | `path` | Result content in tool_result — use as file baseline |
 | `Edit` | `path`, `old_str`, `new_str` | str_replace — this IS the diff |
-| `MultiEdit` | `path`, `edits: [{old_str, new_str}]` | Array of str_replace ops |
 | `Bash` | `command` | Shell command — result in tool_result; shown as-is |
-| `Task` | `description`, `prompt`, `subagent_type` (optional) | Spawns subagent — critical for agent tree. `subagent_type` (e.g., "Explore", "Plan") confirmed in M0 |
+| `Agent` | `description`, `prompt`, `subagent_type` (optional) | Spawns subagent — critical for agent tree. `subagent_type` (e.g., "Explore", "Plan") confirmed in M0 |
+| `Glob` | `pattern`, `path` (optional) | File pattern matching — shown as non-file op |
+| `Grep` | `pattern`, `path` (optional) | Content search — shown as non-file op |
+| `ToolSearch` | `query` | Deferred tool lookup — shown as non-file op |
+| `TaskCreate` | task fields | Task management — shown as info only |
+| `TaskUpdate` | task fields | Task management — shown as info only |
 | `TodoWrite` | `todos` | Task list update — render as info only |
 | `WebSearch` | `query` | External search — shown as non-file op |
-| MCP tools | varies by server | External side effects — flagged as irreversible |
+| `WebFetch` | `url` | Web page fetch — shown as non-file op |
+| `Skill` | `skill`, `args` (optional) | Skill invocation — shown as non-file op |
+| `ExitPlanMode` | — | Exits plan mode — shown as info only |
+| MCP tools | varies by server | `mcp__<server>__<tool>` naming convention — flagged as irreversible |
 
 ### Subagent identification
 
-When Claude spawns a subagent via `Task`, the subagent's messages appear in the **same JSONL file** with a different conversation/session identifier. The parent `Task` tool_use `id` links to the child conversation. The exact linking field names **must be confirmed in M0**.
+Subagent messages are stored in **separate JSONL files**: `<sessionId>/subagents/agent-a<agentId>.jsonl`. The parent session file may contain `progress` lines with `data.type: "agent_progress"` that embed subagent messages inline, but **progress lines are not reliably present** — confirmed in real sessions where general-purpose agents performed file writes with zero progress lines in the parent JSONL.
+
+**v1 approach — progressive agent visibility:**
+- **Agent spawned:** Agent `tool_use` block (subagent_type, description, prompt)
+- **Agent completed:** `tool_result` with `toolUseResult` metadata (status, totalDurationMs, totalTokens, totalToolUseCount)
+- **Agent progress (when present):** `progress` lines with embedded messages — use for real-time visibility when available. These provide live tool call attribution (M4 ticker).
+- **Agent file modifications:** The agent's individual tool calls (Write, Edit, etc.) live in the subagent JSONL file at `<sessionId>/subagents/agent-a<agentId>.jsonl`. Progress lines embed some tool calls in the parent, but are not reliably present for all agent types.
+
+**v1 reads and tails subagent files (M5).** The agent tree builder reads each subagent's JSONL file to populate the agent's `ToolCalls` and `FilesTouched`. For live sessions, the agent watcher tails subagent files in real-time — tool calls appear in the swimlane and detail pane as the agent works. This is read-only (consistent with core principles) and uses the same parser as the parent session. The `agentId` from `toolUseResult` maps directly to the filename.
+
+**Progressive visibility across milestones:**
+1. **M4 (live):** Progress lines give real-time tool call attribution in the ticker — when progress lines are present. Agents without progress lines show running status only.
+2. **M5 (live + complete):** Subagent JSONL files are tailed in real-time for active agents (all agents visible, regardless of progress lines) and read in full for completed agents. The swimlane always shows agent activity.
+
+**Agent modifications in heatmap and diff:** The replay engine (M6) includes agent tool calls in its file history, interleaved by timestamp. Agent Writes become snapshots, agent Edits apply in sequence — the reconstruction algorithm works unchanged. This means the heatmap, file history, and diff view all reflect the complete picture of what happened to each file, regardless of whether the parent or an agent made the change.
+
+**Linkage chain:** Agent `tool_use.id` → progress lines' `parentToolUseID` (when present) → `data.agentId` → tool_result's `toolUseResult.agentId`
+
+**Parallel agents and streaming snapshots:** When Claude spawns multiple agents in one response, each Agent `tool_use` may appear in a **different streaming snapshot** (same `requestId`, different lines). The final snapshot (with `stop_reason != null`) may only contain the LAST agent's tool_use. The parser MUST collect tool_use blocks from ALL snapshots for a given `requestId` to detect parallel agents correctly. See SCHEMA.md for details.
 
 ### Usage metadata and context%
 
@@ -250,9 +275,38 @@ Token counts appear on assistant messages in a `usage` field (`input_tokens`, `o
 
 **Context% is derived directly from `input_tokens` on the last assistant message in each prompt.** When Claude sends a request, `input_tokens` already represents the full conversation history in that request — it is the actual context window fill, not a running total. Divide by the model's context window size to get an exact percentage. The context window size is resolved from the `model` field on that assistant message using the model-to-window-size mapping in configuration (see [Configuration](#configuration)). If `input_tokens` is not present in the log, `ContextPct` is 0 and no context% is displayed — do not estimate. If the model name is not recognized in the mapping, use the configured default window size.
 
+### Streaming snapshots
+
+Assistant responses are written as **multiple JSONL lines** sharing the same `requestId` and `message.id`. Intermediate lines have `stop_reason: null`; the final line has `stop_reason: "end_turn"` or `"tool_use"`. Each line is a complete replacement of the message content (not a delta).
+
+For parsing:
+- Track lines by `requestId`
+- Only use the line with `message.stop_reason != null` as the final response
+- For live display, show the latest line for each `requestId` and replace when a new one arrives
+
+### Thinking blocks
+
+Assistant `message.content` arrays may contain `{"type": "thinking", "thinking": "...", "signature": "..."}` blocks. These contain model reasoning, not user-facing content — skip them for display purposes.
+
+### Meta messages
+
+User messages with `isMeta: true` have `message.content` as a **raw string** (not a list). These are local commands, not human turns. The parser must check `isMeta` first and skip these lines.
+
+### Non-message line types
+
+In addition to `user` and `assistant` lines, the JSONL contains these line types:
+
+- `progress` — agent/hook progress updates (embeds subagent messages via `data.type: "agent_progress"`)
+- `system` — turn duration, compact boundary, local commands
+- `queue-operation` — session queue management (enqueue/dequeue/remove)
+- `file-history-snapshot` — file backup tracking
+- `last-prompt` — records last user prompt text
+
+The parser should handle these gracefully — use what is useful, skip the rest.
+
 ### `/compact` handling
 
-Claude Code's `/compact` command summarizes conversation history. It may appear as a special message type or synthetic turn in the JSONL — confirm during M0. When detected:
+Claude Code's `/compact` command summarizes conversation history. It appears as a `system` line with `subtype: "compact_boundary"`. The line includes `compactMetadata.trigger` (`"auto"` for context pressure, `"manual"` for user-initiated `/compact`) and `compactMetadata.preTokens` (token count before compaction). When detected:
 - Record the prompt index in `Session.CompactAt []int`
 - Context% automatically reflects the smaller context after compact (since `input_tokens` on the next assistant message will be lower)
 - Display a visual compact marker on the prompt where it occurred
@@ -314,27 +368,27 @@ type Prompt struct {
 
 // ToolCall represents a single tool invocation by any actor (parent or agent).
 type ToolCall struct {
-    ID        string
-    AgentID   string    // empty = parent session
-    Type      ToolType
-    Timestamp time.Time
+    ID          string
+    SourceAgent string    // ID of the agent that made this call; empty = parent session
+    Type        ToolType
+    Timestamp   time.Time
 
-    // File operations (Write, Read, Edit, MultiEdit)
+    // File operations (Write, Read, Edit)
     Path    string
     Content string   // Write: full new content; Read: content from tool_result
     OldStr  string   // Edit
     NewStr  string   // Edit
-    Edits   []EditOp // MultiEdit
 
     // Bash
     Command  string
     ExitCode int    // from tool_result; -1 if not available
     Output   string // truncated to 500 chars
 
-    // Task (subagent spawn)
-    TaskDescription string
-    TaskPrompt      string
-    ChildSessionID  string
+    // Agent (subagent spawn) — only populated when Type == ToolAgent
+    SpawnedAgentID      string // the agentId of the spawned subagent
+    AgentDescription    string
+    AgentPrompt         string
+    SubagentType        string
 
     // MCP / other
     MCPToolName   string
@@ -345,19 +399,15 @@ type ToolCall struct {
     IsCLAUDEMD bool // true if path matches CLAUDE.md memory file patterns (see classify.go)
 }
 
-type EditOp struct {
-    OldStr string
-    NewStr string
-}
-
 type ToolType string
 const (
     ToolWrite     ToolType = "write"
     ToolRead      ToolType = "read"
     ToolEdit      ToolType = "edit"
-    ToolMultiEdit ToolType = "multiedit"
     ToolBash      ToolType = "bash"
-    ToolTask      ToolType = "task"
+    ToolAgent     ToolType = "agent"
+    ToolGlob      ToolType = "glob"
+    ToolGrep      ToolType = "grep"
     ToolWebSearch ToolType = "websearch"
     ToolMCP       ToolType = "mcp"
     ToolOther     ToolType = "other"
@@ -371,7 +421,7 @@ type AgentNode struct {
     SessionID       string       // conversation ID used by this agent in the log
     Label           string       // generated: "subagent-1", "subagent-2"
     ModelName       string       // model used by this agent (from its assistant messages)
-    SubagentType    string       // subagent_type from Task input if present (e.g., "Explore", "Plan")
+    SubagentType    string       // subagent_type from Agent input if present (e.g., "Explore", "Plan")
     TaskDescription string
     TaskPrompt      string
     ParentPromptIdx int
@@ -384,14 +434,17 @@ type AgentNode struct {
     Duration        time.Duration // EndTime - StartTime; zero if still running
     TokensIn        int          // sum of input_tokens across this agent's assistant messages
     TokensOut       int          // sum of output_tokens across this agent's assistant messages
+    TotalDurationMs int          // from toolUseResult — authoritative summary from Claude Code
+    TotalTokens     int          // from toolUseResult — authoritative total token count
+    TotalToolUseCount int        // from toolUseResult — authoritative tool use count
     Status          AgentStatus  // running/succeeded/failed — exact, from tool_result presence
     IsParallel      bool         // true if ran concurrently with a sibling agent
 }
 
 // AgentStatus is determined exactly from the JSONL — not heuristic.
-// Running: Task tool_use seen, but no tool_result yet for this Task.
-// Succeeded: Task tool_result received and indicates success.
-// Failed: Task tool_result received and indicates failure.
+// Running: Agent tool_use seen, but no tool_result yet for this Agent.
+// Succeeded: Agent tool_result received and indicates success.
+// Failed: Agent tool_result received and indicates failure.
 type AgentStatus string
 const (
     AgentRunning   AgentStatus = "running"
@@ -428,7 +481,8 @@ type FileHistory struct {
     Path           string
     PromptIdxs     []int    // prompt indices that touched this file, in order
     Ops            []string // op type per entry: "W","R","E","bash"
-    HeatScore      int      // count of distinct prompts with Write or Edit ops (exact)
+    SourceAgents   []string // agent label per entry: "" = parent, "subagent-1" = agent (M6)
+    HeatScore      int      // count of distinct prompts with Write or Edit ops, including agent ops (exact)
     HasBaseline    bool     // true if a pre-session Read baseline is available
     WriteSnapshots map[int]string // full content after each Write op, capped per config
     ReadBaseline   string         // content from first Read op on this file
@@ -456,7 +510,7 @@ To get file content at prompt index `N`:
 1. Find the latest Write op on this file at prompt index `<= N`. Use `WriteSnapshots[writeIdx]` as base; set `baseIdx = writeIdx`.
 2. If no Write exists, use `ReadBaseline` as base; set `baseIdx = -1`.
 3. If neither exists, return `ErrNoBaseline`.
-4. Collect all Edit/MultiEdit ops on this file with prompt index in `(baseIdx, N]`, in order.
+4. Collect all Edit ops on this file with prompt index in `(baseIdx, N]`, in order.
 5. Apply each Edit sequentially: find first occurrence of `OldStr`; if not found, record `WarnReplayGap` on the prompt and skip this edit; replace with `NewStr`.
 6. Return resulting content.
 
@@ -475,7 +529,7 @@ internal/
     types.go             — ALL domain types — single source of truth
 
   discovery/             — (M1)
-    hash.go              — project path → hash (confirmed in M0)
+    hash.go              — project path encoding (slash-to-dash)
     scan.go              — scans projectsDir, builds []SessionMeta
     meta.go              — populates SessionMeta from first/last JSONL lines only
 
@@ -485,7 +539,7 @@ internal/
     classify.go          — sets IsCLAUDEMD; identifies MCP tool calls; generates Warnings
                            NOTE: no Bash risk classification — Bash shown as-is
 
-  replay/                — (M5)
+  replay/                — (M6)
     engine.go            — builds FileHistory; implements GetContentAt()
     diff.go              — computes unified diff between two content strings
 
@@ -497,13 +551,19 @@ internal/
                            directly from the watcher goroutine — communicate only
                            via tea.Msg events
 
-  agent/                 — (M4)
-    tree.go              — builds AgentNode tree from session ID linkage (exact);
+  agent/                 — (M5)
+    tree.go              — builds AgentNode tree from Agent tool linkage;
+                           reads subagent JSONL files for full tool call history;
                            populates agent metadata (model, tokens, duration, files touched);
-                           extracts subagent_type from Task input if present;
-                           detects parallel vs sequential (timestamp-based, see M4);
+                           extracts subagent_type from Agent input if present;
+                           detects parallel vs sequential (timestamp-based, see M5);
                            if linkage unresolvable: emits parse warning, attaches
                            agent to Session.UnlinkedAgents, does NOT guess
+    watcher.go           — live subagent file tailer; watches for subagent JSONL
+                           file creation when Agent tool_use arrives; tails each
+                           active agent's file; emits MsgAgentToolCall events;
+                           stops tailing when agent completes (tool_result received);
+                           only active during live sessions
 
   config/
     config.go            — configuration loading, defaults, access (M1)
@@ -514,26 +574,26 @@ internal/
     format.go            — shared display formatting utilities (M1)
     picker.go            — session picker screen (M1)
     timeline.go          — timeline: prompt list + detail pane + search/filter (M3)
-    swimlane.go          — parallel agent swimlane (M4)
-    heatmap.go           — file tree heatmap (M5)
-    diff.go              — diff view (M6)
+    swimlane.go          — parallel agent swimlane (M5)
+    heatmap.go           — file tree heatmap (M6)
+    diff.go              — diff view (M7)
     components/
       promptlist.go      — scrollable prompt list (M3)
       detail.go          — prompt detail renderer (M3)
-      minidiff.go        — inline diff renderer, 8 context lines max (M5)
-      ticker.go          — live activity ticker strip (M3)
+      minidiff.go        — inline diff renderer, 8 context lines max (M6)
+      ticker.go          — live activity ticker strip (M4)
 
 internal/testdata/       — fixture JSONL files (created in M0)
 
 SCHEMA.md                — created in M0, authoritative field name reference
 spec/                    — project specification (this directory)
 IDEAS.md                 — deferred features and future ideas
-README.md                — skeleton in M1, completed in M7
-.goreleaser.yaml         — M7 only
-.github/workflows/       — M7 only
+README.md                — skeleton in M1, completed in M8
+.goreleaser.yaml         — M8 only
+.github/workflows/       — M8 only
 ```
 
-**Add `UnlinkedAgents []*AgentNode` to `Session`** for agents whose session ID linkage could not be resolved. These are displayed in the timeline with a `⚠ agent linkage unresolved` indicator. This field is not in the type definition above — add it when implementing M4.
+**Add `UnlinkedAgents []*AgentNode` to `Session`** for agents whose session ID linkage could not be resolved. These are displayed in the timeline with a `⚠ agent linkage unresolved` indicator. This field is not in the type definition above — add it when implementing M5.
 
 ### Data flow
 
@@ -547,22 +607,23 @@ watcher.Tailer            — streams complete lines (existing replay, then live
 parser.Builder            — assembles Session/Prompt tree
     │                       incremental: emits MsgPromptSealed as each prompt seals
     │
-    ���──► agent.TreeBuilder  — resolves session IDs → AgentNode tree per prompt (M4)
+    ���──► agent.TreeBuilder  — resolves session IDs → AgentNode tree per prompt (M5)
     │
-    ├──► replay.Engine      — builds FileHistory index; GetContentAt() on demand (M5)
+    ├──► replay.Engine      — builds FileHistory index; GetContentAt() on demand (M6)
     │
     └──�� ui.App             — receives tea.Msg events; re-renders active view
 ```
 
-**Ordering constraint:** Agent tree builder runs after each prompt seals. Replay engine builds FileHistory after full parse; GetContentAt() is lazy. Parser runs in M2, agent tree in M4, replay engine in M5 — do not pre-implement upstream interfaces before they are needed.
+**Ordering constraint:** Agent tree builder runs after each prompt seals. Replay engine builds FileHistory after full parse; GetContentAt() is lazy. Parser runs in M2, agent tree in M5, replay engine in M6 — do not pre-implement upstream interfaces before they are needed.
 
 ### Bubbletea events
 
 ```go
-type MsgPromptSealed      struct{ PromptIdx int }
-type MsgPromptUpdate      struct{ PromptIdx int }
-type MsgReplayDone        struct{}
+type MsgPromptSealed       struct{ PromptIdx int }
+type MsgPromptUpdate       struct{ PromptIdx int }
+type MsgReplayDone         struct{}
 type MsgSessionFileDeleted struct{}
+type MsgAgentToolCall      struct{ AgentID string; ToolCall *ToolCall } // M5: from subagent file tailer
 ```
 
 All views receive `tea.WindowSizeMsg` and must update their internal dimensions.
@@ -581,11 +642,11 @@ projectsDir  := filepath.Join(claudeDir, "projects")
 
 Never hardcode `~`. Always use `filepath.Join()`.
 
-### Hash algorithm
+### Project path encoding
 
-Must be confirmed in M0. Document in `SCHEMA.md` and implement in `internal/discovery/hash.go`.
+The directory name under `projectsDir` is **not a hash** — it is the absolute project path with `/` replaced by `-`. For example, `/Users/careykevin/code/kno-ai/kno-trace` becomes `-Users-careykevin-code-kno-ai-kno-trace`.
 
-**Fallback if hash not determinable from path alone:** Scan all subdirectories of `projectsDir`; check each for a metadata file recording the original project path; match against CWD. Document whichever approach is confirmed in M0.
+**Matching CWD:** Encode the CWD using the same slash-to-dash replacement and compare against directory names. Do not attempt to reverse-map directory names back to paths (ambiguous because directory names can contain `-`). Implement in `internal/discovery/hash.go`.
 
 ### CLI interface
 
@@ -631,7 +692,7 @@ All decisions are final for v1. Do not revisit during implementation.
 
 **4. Prompt unit = human turn boundary.** Everything between two consecutive non-tool-result user messages belongs to the enclosing prompt.
 
-**5. Agent tree from session IDs only — no fallback guessing.** The `agent.TreeBuilder` uses the exact session ID linkage mechanism confirmed in M0. If that linkage cannot be resolved for a given agent, the agent is placed in `Session.UnlinkedAgents` and marked `WarnAgentUnlinked`. We do not guess parent assignments by time proximity or any other heuristic.
+**5. Agent tree from Agent tool linkage only — no fallback guessing.** The `agent.TreeBuilder` uses the exact Agent tool_use ID → progress line → toolUseResult linkage. If that linkage cannot be resolved for a given agent, the agent is placed in `Session.UnlinkedAgents` and marked `WarnAgentUnlinked`. We do not guess parent assignments by time proximity or any other heuristic.
 
 **6. Parallel agents detected by timestamp — exact.** Two agents are parallel if `Agent B's tool_use timestamp` is before `Agent A's tool_result timestamp`. That is: B was spawned before A returned. This is an exact determination from log timestamps, not a heuristic.
 
@@ -649,7 +710,7 @@ AGENTS.md
 ```
 No "similar" patterns. Only this list.
 
-**10. MCP calls are any unknown tool name.** Any tool name not in the known list (Write/Read/Edit/MultiEdit/Bash/Task/TodoWrite/WebSearch) is treated as an MCP call. Deterministic.
+**10. MCP calls are any tool name with `mcp__` prefix.** MCP tools follow the `mcp__<server>__<tool>` naming convention — use prefix match on `mcp__` to detect them. Deterministic.
 
 **11. `Session.IsLive` is set only by the watcher.** It is `true` only while the watcher goroutine is actively tailing the file and receiving fsnotify events. It is never inferred from file modification time.
 
@@ -685,6 +746,9 @@ context_nudge_pct: 80      # ContextPct above this -> ticker strip nudge message
 
 # Session auto-open behavior
 auto_open_max_age_hours: 24 # auto-open latest CWD session if modified within this window
+
+# Loop detection
+loop_detection_threshold: 3 # same tool+path repeated this many times -> WarnLoopDetected
 
 # Resource limits
 max_snapshots_per_file: 10  # max WriteSnapshots retained per file (oldest evicted first)
@@ -724,13 +788,14 @@ Each milestone builds progressively toward the control room vision:
 | M0 | Schema Investigation | Ground truth — confirm what the JSONL gives us | [m0-schema.md](milestones/m0-schema.md) |
 | M1 | Session Picker | Front door — find and open a session, see the summary card | [m1-session-picker.md](milestones/m1-session-picker.md) |
 | M2 | Parser, Builder & Live Tail | Data pipeline — JSONL becomes structured data, live streaming works | [m2-parser.md](milestones/m2-parser.md) |
-| M3 | Timeline View | **Core control room** — live feed, ticker, elapsed time, context gauge, auto-follow | [m3-timeline.md](milestones/m3-timeline.md) |
-| M4 | Agent Tree & Swimlane | **Flagship view** — live agent dashboard, parallel lanes, conflict detection | [m4-agents.md](milestones/m4-agents.md) |
-| M5 | File Intelligence & Heatmap | Hot spot detector — which files are getting thrashed, full change history | [m5-heatmap.md](milestones/m5-heatmap.md) |
-| M6 | Diff View | Before/after comparison — what changed between any two points | [m6-diff.md](milestones/m6-diff.md) |
-| M7 | Release Polish & Distribution | Ship it — `brew install kno-trace`, README with control room pitch | [m7-release.md](milestones/m7-release.md) |
+| M3 | Static Timeline | **Core layout** — navigable timeline with badges, search, detail pane | [m3-static-timeline.md](milestones/m3-static-timeline.md) |
+| M4 | Live Timeline & Ticker | **Control room comes alive** — real-time updates, ticker, loop detection, auto-follow | [m4-live-timeline.md](milestones/m4-live-timeline.md) |
+| M5 | Agent Tree & Swimlane | **Flagship view** — live agent dashboard, parallel lanes, conflict detection | [m5-agents.md](milestones/m5-agents.md) |
+| M6 | File Intelligence & Heatmap | Hot spot detector — which files are getting thrashed, full change history | [m6-heatmap.md](milestones/m6-heatmap.md) |
+| M7 | Diff View | Before/after comparison — what changed between any two points | [m7-diff.md](milestones/m7-diff.md) |
+| M8 | Release Polish & Distribution | Ship it — `brew install kno-trace`, README with control room pitch | [m8-release.md](milestones/m8-release.md) |
 
-**The control room is usable at M3.** By M4 it's compelling for the target audience (agent power users). M5-M7 add analytical depth and polish.
+**The control room is usable at M3.** By M4 it's a daily driver for live sessions. By M5 it's compelling for the target audience (agent power users). M6-M8 add analytical depth and polish.
 
 ---
 
@@ -752,15 +817,15 @@ github.com/<user>/kno-trace/
   README.md
   LICENSE
   CHANGELOG.md
-  .goreleaser.yaml                   — M7
-  .github/workflows/release.yaml    — M7
+  .goreleaser.yaml                   — M8
+  .github/workflows/release.yaml    — M8
 ```
 
 Homebrew tap: separate repo `github.com/<user>/homebrew-tap`, auto-updated by goreleaser on each release tag.
 
 User install: `brew tap <user>/tap && brew install kno-trace`
 
-Versioning: `v0.x.y` through M6; `v1.0.0` on M7.
+Versioning: `v0.x.y` through M7; `v1.0.0` on M8.
 
 ### README Assets
 
