@@ -294,7 +294,7 @@ func pairToolResult(evt *RawEvent, toolCallsByID map[string]*model.ToolCall, pro
 
 		// Populate result-side fields from toolUseResult.
 		if len(evt.ToolUseResult) > 0 {
-			populateToolResult(tc, evt.ToolUseResult, block.IsError)
+			PopulateToolResult(tc, evt.ToolUseResult, block.IsError)
 
 			// Agent tool_result: link via the tool_use ID to the correct agent.
 			if tc.Type == model.ToolAgent {
@@ -304,8 +304,9 @@ func pairToolResult(evt *RawEvent, toolCallsByID map[string]*model.ToolCall, pro
 	}
 }
 
-// populateToolResult fills in result-side fields on a ToolCall.
-func populateToolResult(tc *model.ToolCall, result json.RawMessage, isError bool) {
+// PopulateToolResult fills in result-side fields on a ToolCall from the raw
+// toolUseResult JSON. Exported for reuse by the agent tree builder.
+func PopulateToolResult(tc *model.ToolCall, result json.RawMessage, isError bool) {
 	switch tc.Type {
 	case model.ToolRead:
 		// Read result: extract file content from toolUseResult.file.content.

@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -362,6 +363,196 @@ func TestEnrichSession_NilSession(t *testing.T) {
 	cfg := config.Load()
 	// Should not panic.
 	EnrichSession(nil, "/some/path", cfg)
+}
+
+func TestEnrichSession_ToolCallTypes(t *testing.T) {
+	s := buildTestSession(t, "parallel_agents.jsonl")
+	cfg := config.Load()
+	sessionDir := testdataDir(t)
+	EnrichSession(s, sessionDir, cfg)
+
+	agent001 := findAgent(s.Prompts[0].Agents, "agent-001")
+	if agent001 == nil {
+		t.Fatal("agent-001 not found")
+	}
+
+	// Verify exact tool call types and order: Grep, Read, Read, Glob.
+	expected := []model.ToolType{model.ToolGrep, model.ToolRead, model.ToolRead, model.ToolGlob}
+	if len(agent001.ToolCalls) != len(expected) {
+		t.Fatalf("agent-001: got %d tool calls, want %d", len(agent001.ToolCalls), len(expected))
+	}
+	for i, tc := range agent001.ToolCalls {
+		if tc.Type != expected[i] {
+			t.Errorf("agent-001 tool call [%d]: type=%s, want %s", i, tc.Type, expected[i])
+		}
+	}
+
+	agent002 := findAgent(s.Prompts[0].Agents, "agent-002")
+	if agent002 == nil {
+		t.Fatal("agent-002 not found")
+	}
+
+	// Agent-002: Glob, Grep, Read, Read, Edit.
+	expected2 := []model.ToolType{model.ToolGlob, model.ToolGrep, model.ToolRead, model.ToolRead, model.ToolEdit}
+	if len(agent002.ToolCalls) != len(expected2) {
+		t.Fatalf("agent-002: got %d tool calls, want %d", len(agent002.ToolCalls), len(expected2))
+	}
+	for i, tc := range agent002.ToolCalls {
+		if tc.Type != expected2[i] {
+			t.Errorf("agent-002 tool call [%d]: type=%s, want %s", i, tc.Type, expected2[i])
+		}
+	}
+}
+
+func TestEnrichSession_ToolResultPairing(t *testing.T) {
+	s := buildTestSession(t, "parallel_agents.jsonl")
+	cfg := config.Load()
+	sessionDir := testdataDir(t)
+	EnrichSession(s, sessionDir, cfg)
+
+	// Agent-002 has a Read of go.mod — the toolUseResult has file.content.
+	agent002 := findAgent(s.Prompts[0].Agents, "agent-002")
+	if agent002 == nil {
+		t.Fatal("agent-002 not found")
+	}
+
+	// Find the Read of go.mod.
+	var goModRead *model.ToolCall
+	for _, tc := range agent002.ToolCalls {
+		if tc.Type == model.ToolRead && tc.Path == "go.mod" {
+			goModRead = tc
+			break
+		}
+	}
+	if goModRead == nil {
+		t.Fatal("agent-002: Read go.mod tool call not found")
+	}
+	if goModRead.Content == "" {
+		t.Error("agent-002: Read go.mod should have Content populated from tool result")
+	}
+}
+
+func TestDetectFileConflicts_ReadOnlyNoConflict(t *testing.T) {
+	// Two parallel agents that only Read the same file — no conflict.
+	s := &model.Session{
+		Prompts: []*model.Prompt{{
+			Agents: []*model.AgentNode{
+				{
+					ID:         "a1",
+					Label:      "subagent-1",
+					IsParallel: true,
+					ToolCalls: []*model.ToolCall{
+						{Type: model.ToolRead, Path: "shared.go"},
+					},
+					FilesTouched: []string{"shared.go"},
+				},
+				{
+					ID:         "a2",
+					Label:      "subagent-2",
+					IsParallel: true,
+					ToolCalls: []*model.ToolCall{
+						{Type: model.ToolRead, Path: "shared.go"},
+					},
+					FilesTouched: []string{"shared.go"},
+				},
+			},
+		}},
+	}
+
+	detectFileConflicts(s)
+
+	for _, w := range s.Prompts[0].Warnings {
+		if w.Type == model.WarnAgentConflict {
+			t.Error("read-only shared file should not trigger WarnAgentConflict")
+		}
+	}
+}
+
+func TestDetectFileConflicts_SpecificPath(t *testing.T) {
+	s := buildTestSession(t, "parallel_agents.jsonl")
+	cfg := config.Load()
+	sessionDir := testdataDir(t)
+	EnrichSession(s, sessionDir, cfg)
+
+	// Verify the conflict warning names the specific path.
+	found := false
+	for _, w := range s.Prompts[0].Warnings {
+		if w.Type == model.WarnAgentConflict {
+			if !strings.Contains(w.Message, "internal/parser/builder.go") {
+				t.Errorf("conflict warning should mention internal/parser/builder.go, got: %s", w.Message)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected WarnAgentConflict")
+	}
+}
+
+func TestEnrichFromFile_Directly(t *testing.T) {
+	cfg := config.Load()
+	path := filepath.Join(testdataDir(t), "session-003", "subagents", "agent-aagent-001.jsonl")
+
+	ag := &model.AgentNode{ID: "agent-001"}
+	if err := EnrichFromFile(ag, path, cfg); err != nil {
+		t.Fatalf("EnrichFromFile: %v", err)
+	}
+	if len(ag.ToolCalls) != 3 {
+		t.Errorf("expected 3 tool calls, got %d", len(ag.ToolCalls))
+	}
+	if ag.ModelName == "" {
+		t.Error("expected ModelName to be set")
+	}
+	if ag.TokensIn == 0 {
+		t.Error("expected TokensIn to be accumulated")
+	}
+}
+
+func TestEnrichFromFile_NotFound(t *testing.T) {
+	cfg := config.Load()
+	ag := &model.AgentNode{ID: "missing"}
+	err := EnrichFromFile(ag, "/nonexistent/path.jsonl", cfg)
+	if err == nil {
+		t.Error("expected error for missing file")
+	}
+	// Agent should be untouched.
+	if len(ag.ToolCalls) != 0 {
+		t.Error("expected 0 tool calls for missing file")
+	}
+}
+
+func TestEnrichFromEvents_NoToolCalls(t *testing.T) {
+	// Agent with only text responses — no tool_use blocks.
+	events := []*parser.RawEvent{
+		{
+			Type: "assistant",
+			Message: &parser.RawMessage{
+				Model: "claude-haiku-4-5-20251001",
+				Content: []parser.ContentBlock{
+					{Type: "text", Text: "I found nothing."},
+				},
+				Usage: &parser.Usage{InputTokens: 100, OutputTokens: 50},
+			},
+		},
+	}
+
+	ag := &model.AgentNode{ID: "text-only"}
+	err := enrichFromEvents(ag, events)
+	if err != nil {
+		t.Fatalf("enrichFromEvents: %v", err)
+	}
+	if len(ag.ToolCalls) != 0 {
+		t.Error("expected 0 tool calls for text-only agent")
+	}
+	if len(ag.FilesTouched) != 0 {
+		t.Error("expected 0 files touched")
+	}
+	if ag.ModelName != "claude-haiku-4-5-20251001" {
+		t.Errorf("ModelName = %q, want claude-haiku-4-5-20251001", ag.ModelName)
+	}
+	if ag.TokensIn != 100 {
+		t.Errorf("TokensIn = %d, want 100", ag.TokensIn)
+	}
 }
 
 // findAgent finds an agent by ID in a slice.

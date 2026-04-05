@@ -232,7 +232,23 @@ func (d *Detail) renderAgents(b *strings.Builder, p *model.Prompt, isLive bool) 
 			agentType = "agent"
 		}
 
+		// Build the type label, including model when different from parent.
+		typeLabel := agentType
+		if agent.ModelName != "" && agent.ModelName != p.ModelName {
+			typeLabel += ", " + shortModel(agent.ModelName)
+		}
+
 		desc := Truncate(agent.TaskDescription, d.Width-30)
+
+		// Suffix badges (parallel, conflict).
+		var suffixes []string
+		if agent.IsParallel {
+			suffixes = append(suffixes, "parallel")
+		}
+		suffix := ""
+		if len(suffixes) > 0 {
+			suffix = "  " + DimStyle.Render("["+strings.Join(suffixes, ", ")+"]")
+		}
 
 		switch agent.Status {
 		case model.AgentRunning:
@@ -247,8 +263,8 @@ func (d *Detail) renderAgents(b *strings.Builder, p *model.Prompt, isLive bool) 
 			if len(parts) > 0 {
 				meta = " — " + strings.Join(parts, " — ")
 			}
-			b.WriteString(fmt.Sprintf("  ⬡ %s (%s) — running%s\n",
-				agent.Label, agentType, DimStyle.Render(meta)))
+			b.WriteString(fmt.Sprintf("  ⬡ %s (%s) — running%s%s\n",
+				agent.Label, typeLabel, DimStyle.Render(meta), suffix))
 			if desc != "" {
 				b.WriteString("    " + DimStyle.Render(desc) + "\n")
 			}
@@ -261,8 +277,8 @@ func (d *Detail) renderAgents(b *strings.Builder, p *model.Prompt, isLive bool) 
 					FormatTokens(agent.TotalTokens),
 					FormatDuration(agent.Duration))
 			}
-			line := fmt.Sprintf("  ⬡ ✓ %s (%s) — done%s",
-				agent.Label, agentType, DimStyle.Render(meta))
+			line := fmt.Sprintf("  ⬡ ✓ %s (%s) — done%s%s",
+				agent.Label, typeLabel, DimStyle.Render(meta), suffix)
 			b.WriteString(line + "\n")
 
 		case model.AgentFailed:
@@ -272,17 +288,30 @@ func (d *Detail) renderAgents(b *strings.Builder, p *model.Prompt, isLive bool) 
 					agent.TotalToolUseCount,
 					FormatDuration(agent.Duration))
 			}
-			line := fmt.Sprintf("  ⬡ ✗ %s (%s) — failed%s",
-				agent.Label, agentType, MutedStyle.Foreground(ColorRed).Render(meta))
+			line := fmt.Sprintf("  ⬡ ✗ %s (%s) — failed%s%s",
+				agent.Label, typeLabel, MutedStyle.Foreground(ColorRed).Render(meta), suffix)
 			b.WriteString(line + "\n")
 
 		default:
-			// Unknown status — show what we have.
-			line := fmt.Sprintf("  ⬡ %s (%s) — %s",
-				agent.Label, agentType, DimStyle.Render(desc))
+			line := fmt.Sprintf("  ⬡ %s (%s) — %s%s",
+				agent.Label, typeLabel, DimStyle.Render(desc), suffix)
 			b.WriteString(line + "\n")
 		}
 	}
+}
+
+// shortModel extracts a short form like "haiku" or "sonnet" from a model ID.
+func shortModel(m string) string {
+	lower := strings.ToLower(m)
+	for _, name := range []string{"opus", "sonnet", "haiku"} {
+		if strings.Contains(lower, name) {
+			return name
+		}
+	}
+	if m != "" {
+		return m
+	}
+	return ""
 }
 
 func toolIcon(t model.ToolType) string {

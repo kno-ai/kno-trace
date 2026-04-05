@@ -59,7 +59,7 @@ func enrichAgents(s *model.Session, agents []*model.AgentNode, sessionDir, sessi
 		}
 
 		subagentPath := SubagentFilePath(sessionDir, sessionID, agent.ID)
-		if err := enrichFromFile(agent, subagentPath, cfg); err != nil {
+		if err := EnrichFromFile(agent, subagentPath, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "kno-trace: agent %s: %v\n", agent.ID, err)
 			// Leave existing summary data from toolUseResult intact.
 		}
@@ -100,8 +100,9 @@ func SubagentsDir(sessionDir, sessionID string) string {
 	return filepath.Join(sessionDir, sessionID, "subagents")
 }
 
-// enrichFromFile parses a subagent JSONL file and populates the agent node.
-func enrichFromFile(agent *model.AgentNode, path string, cfg *config.Config) error {
+// EnrichFromFile parses a subagent JSONL file and populates the agent node.
+// Exported for use by the UI when a live agent completes (enriches in place).
+func EnrichFromFile(agent *model.AgentNode, path string, cfg *config.Config) error {
 	events, err := parser.ParseFile(path, cfg)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -162,11 +163,11 @@ func enrichFromEvents(agent *model.AgentNode, events []*parser.RawEvent) error {
 				if block.Type != "tool_result" {
 					continue
 				}
-				if origBlock, ok := toolCallsByID[block.ToolResultID]; ok {
-					// Find the corresponding ToolCall in agent.ToolCalls.
+				if _, ok := toolCallsByID[block.ToolResultID]; ok {
+					// Find the corresponding ToolCall and populate result fields.
 					for _, tc := range agent.ToolCalls {
 						if tc.ID == block.ToolResultID {
-							populateAgentToolResult(tc, origBlock, evt)
+							parser.PopulateToolResult(tc, evt.ToolUseResult, block.IsError)
 							break
 						}
 					}
@@ -179,7 +180,7 @@ func enrichFromEvents(agent *model.AgentNode, events []*parser.RawEvent) error {
 	// Grep/Glob patterns are search queries, not file paths — exclude them.
 	seen := make(map[string]bool)
 	for _, tc := range agent.ToolCalls {
-		if tc.Path != "" && isFilePath(tc.Type) && !seen[tc.Path] {
+		if tc.Path != "" && IsFilePath(tc.Type) && !seen[tc.Path] {
 			agent.FilesTouched = append(agent.FilesTouched, tc.Path)
 			seen[tc.Path] = true
 		}
@@ -211,57 +212,15 @@ func buildAgentToolCall(block parser.ContentBlock, ts time.Time, agentID string,
 	return tc
 }
 
-// populateAgentToolResult fills result-side fields on an agent's ToolCall.
-func populateAgentToolResult(tc *model.ToolCall, origBlock *parser.ContentBlock, evt *parser.RawEvent) {
-	switch tc.Type {
-	case model.ToolRead:
-		// Read results may come via toolUseResult.file.content or as string.
-		if len(evt.ToolUseResult) > 0 {
-			var readResult struct {
-				File struct {
-					Content string `json:"content"`
-				} `json:"file"`
-			}
-			if err := json.Unmarshal(evt.ToolUseResult, &readResult); err == nil && readResult.File.Content != "" {
-				tc.Content = readResult.File.Content
-			}
-		}
-	case model.ToolBash:
-		if len(evt.ToolUseResult) > 0 {
-			var bashResult struct {
-				Stdout   string `json:"stdout"`
-				Stderr   string `json:"stderr"`
-				ExitCode *int   `json:"exitCode"`
-			}
-			if err := json.Unmarshal(evt.ToolUseResult, &bashResult); err == nil {
-				output := bashResult.Stdout
-				if bashResult.Stderr != "" {
-					if output != "" {
-						output += "\n"
-					}
-					output += bashResult.Stderr
-				}
-				if len(output) > 500 {
-					output = output[:500]
-				}
-				tc.Output = output
-				if bashResult.ExitCode != nil {
-					tc.ExitCode = *bashResult.ExitCode
-				}
-			}
-		}
-	}
-}
-
 // isWriteOp returns true for tool types that modify files.
 func isWriteOp(t model.ToolType) bool {
 	return t == model.ToolWrite || t == model.ToolEdit
 }
 
-// isFilePath returns true for tool types whose Path field is an actual file path
+// IsFilePath returns true for tool types whose Path field is an actual file path
 // (not a search pattern). Grep and Glob store patterns in Path for display
 // convenience, but those are not files the agent "touched."
-func isFilePath(t model.ToolType) bool {
+func IsFilePath(t model.ToolType) bool {
 	return t == model.ToolWrite || t == model.ToolRead || t == model.ToolEdit
 }
 

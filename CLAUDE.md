@@ -139,3 +139,10 @@ Hard-won knowledge from building each milestone. Read before starting a new mile
 - **File conflict detection requires subagent file data.** `FilesTouched` is populated from actual tool calls in subagent files, not from progress lines. Conflicts are only flagged between parallel agents where at least one performed a write/edit.
 - **`ensurePickerLoaded` was replaced with `refreshPicker`.** The old function skipped rescans when sessions were cached, causing lockouts when files were deleted. Always rescan on `P` key or watcher error.
 - **Watcher must send an error message when file open fails.** `MsgWatcherError` was added — without it, the app gets stuck in "Loading..." forever when a session file is missing.
+
+### M5: Agent Tree & Swimlane (Layer 2)
+
+- **AgentID is not known at Agent tool_use time.** It only appears in progress lines (`data.agentId`) or the tool_result (`toolUseResult.agentId`). Live tailing starts from progress lines. Agents without progress lines get enriched from their file when tool_result arrives.
+- **`enrichCompletedAgent` is the authoritative enrichment path.** When an agent completes, its live-tailed tool calls are replaced by a full parse of the subagent file. This ensures result pairing, token accumulation, and FilesTouched are complete — even for agents that were being tailed live.
+- **Never write to the user's filesystem.** The agent watcher must not create the `subagents/` directory. If it doesn't exist yet, watch the parent session directory for its creation instead. Claude Code creates it when the first agent spawns.
+- **The agent watcher channel uses `interface{}` not `tea.Msg`.** The `agent` package doesn't import bubbletea. The UI wraps agent watcher messages in `msgAgentWatcherEvent` for Bubbletea's message loop, using the same channel-relay pattern as the parent session watcher.

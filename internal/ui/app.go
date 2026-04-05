@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -55,6 +56,10 @@ type App struct {
 	liveToolCallsByID map[string]*model.ToolCall // carried across incremental builds
 	lastBranch        string                      // most recent git branch, carried across incremental calls
 	agentCounter      int                          // agent numbering sequence, carried across incremental calls
+	agentWatcher       *agent.AgentWatcher          // live subagent file tailer (nil for completed sessions)
+	agentWatcherCh     <-chan interface{}            // receive side for waitForAgentWatcher
+	agentWatcherSendCh chan interface{}              // send side — closed on cleanup to unblock waitForAgentWatcher
+	agentWatcherDone   chan struct{}                 // closed on cleanup to unblock send callback
 }
 
 // NewApp creates the root model starting at the session picker.
@@ -135,6 +140,24 @@ type msgWatcherEvent struct {
 	ch    <-chan tea.Msg
 }
 
+// msgAgentWatcherEvent wraps a message from the agent watcher channel.
+type msgAgentWatcherEvent struct {
+	inner interface{}
+	ch    <-chan interface{}
+}
+
+// waitForAgentWatcher returns a Cmd that waits for the next agent watcher message.
+// Returns nil when the channel is closed or done is signaled (cleanup).
+func waitForAgentWatcher(ch <-chan interface{}) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return msgAgentWatcherEvent{inner: msg, ch: ch}
+	}
+}
+
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -153,6 +176,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := a.handleWatcherMsg(msg.inner)
 		// Keep listening for more watcher messages.
 		return a, tea.Batch(cmd, waitForWatcher(msg.ch))
+
+	case msgAgentWatcherEvent:
+		cmd := a.handleAgentWatcherMsg(msg.inner)
+		return a, tea.Batch(cmd, waitForAgentWatcher(msg.ch))
 
 	case msgPickerRefresh:
 		a.refreshPicker()
@@ -198,6 +225,9 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 				a.session, msg.Events, 0, a.cfg, a.liveToolCallsByID, a.lastBranch, a.agentCounter)
 			a.lastBranch = branch
 
+			// Notify agent watcher of new Agent tool_use/tool_result/progress events.
+			a.notifyAgentWatcher(msg.Events)
+
 			// Feed new events to the ticker.
 			tickerEntries := extractTickerEntries(msg.Events)
 			a.timeline.ticker.Push(tickerEntries)
@@ -242,19 +272,43 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 			a.timeline = newTimeline(a.session)
 			a.timeline.setSize(a.width, a.height)
 
-			// If live, enable auto-follow and start the tick.
+			// If live, enable auto-follow, start the tick, and start agent watcher.
 			if a.session.IsLive {
 				a.timeline.autoFollow = true
 				a.timeline.isLive = true
 				a.timeline.ticker = NewTicker(a.cfg.LoopDetectionThreshold)
 				a.timeline.followLatest()
+
+				// Start agent watcher for live subagent file tailing.
+				if a.session.FilePath != "" {
+					sessionDir := filepath.Dir(a.session.FilePath)
+					ch := make(chan interface{}, 256)
+					done := make(chan struct{})
+					a.agentWatcherCh = ch
+					a.agentWatcherSendCh = ch
+					a.agentWatcherDone = done
+					aw := agent.NewAgentWatcher(sessionDir, a.session.ID, func(msg interface{}) {
+						select {
+						case ch <- msg:
+						case <-done:
+						}
+					})
+					if err := aw.Start(); err == nil {
+						a.agentWatcher = aw
+					}
+				}
 			}
 		}
 		a.view = viewTimeline
 
 		// Start tick for live sessions — do NOT stop the watcher.
 		if a.session != nil && a.session.IsLive {
-			return tickCmd()
+			var cmds []tea.Cmd
+			cmds = append(cmds, tickCmd())
+			if a.agentWatcherCh != nil {
+				cmds = append(cmds, waitForAgentWatcher(a.agentWatcherCh))
+			}
+			return tea.Batch(cmds...)
 		}
 		// For completed sessions, stop the watcher (no new data expected).
 		a.cleanup()
@@ -283,6 +337,122 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 		a.statusMsg = "Session unavailable — list refreshed"
 	}
 	return nil
+}
+
+// handleAgentWatcherMsg processes a message from the agent watcher.
+func (a *App) handleAgentWatcherMsg(msg interface{}) tea.Cmd {
+	switch msg := msg.(type) {
+	case agent.MsgAgentToolCall:
+		if a.session == nil {
+			return nil
+		}
+		// Find the agent by toolUseID and append the tool call.
+		for _, prompt := range a.session.Prompts {
+			for _, ag := range prompt.Agents {
+				if ag.ToolUseID == msg.ToolUseID {
+					ag.ToolCalls = append(ag.ToolCalls, msg.ToolCall)
+					// Update FilesTouched.
+					if msg.ToolCall.Path != "" && agent.IsFilePath(msg.ToolCall.Type) {
+						found := false
+						for _, p := range ag.FilesTouched {
+							if p == msg.ToolCall.Path {
+								found = true
+								break
+							}
+						}
+						if !found {
+							ag.FilesTouched = append(ag.FilesTouched, msg.ToolCall.Path)
+						}
+					}
+					a.timeline.syncSession(a.session)
+					return nil
+				}
+			}
+		}
+
+	case agent.MsgAgentFileFound:
+		// Agent file appeared — no UI action needed, tailing starts automatically.
+
+	case agent.MsgAgentFileMissing:
+		// Agent completed but file was never found. Already handled by
+		// the tree builder's enrichment on tool_result.
+	}
+	return nil
+}
+
+// notifyAgentWatcher checks new events for Agent tool_use, tool_result, and
+// progress lines, and notifies the agent watcher to start/stop tailing.
+//
+// The agentID is not available at tool_use time (only on tool_result or progress
+// lines). For agents that emit progress lines, we start tailing early. For agents
+// without progress lines, we enrich from the subagent file when tool_result arrives.
+func (a *App) notifyAgentWatcher(events []*parser.RawEvent) {
+	if a.agentWatcher == nil {
+		return
+	}
+	for _, evt := range events {
+		switch evt.Type {
+		case "user":
+			if evt.Message == nil {
+				continue
+			}
+			for _, block := range evt.Message.Content {
+				if block.Type != "tool_result" {
+					continue
+				}
+				tc, ok := a.liveToolCallsByID[block.ToolResultID]
+				if !ok || tc.Type != model.ToolAgent {
+					continue
+				}
+				// Agent completed — stop tailing.
+				a.agentWatcher.StopAgent(block.ToolResultID)
+
+				// Enrich the agent from its subagent file. This catches agents
+				// that had no progress lines (never got WatchAgent called) and
+				// ensures complete data even for agents that were tailed live.
+				a.enrichCompletedAgent(block.ToolResultID)
+			}
+
+		case "progress":
+			if evt.ProgressData == nil || evt.ProgressData.Type != "agent_progress" {
+				continue
+			}
+			agentID := evt.ProgressData.AgentID
+			parentToolUseID := evt.ProgressData.ParentToolUseID
+			if agentID != "" && parentToolUseID != "" {
+				a.agentWatcher.WatchAgent(agentID, parentToolUseID)
+			}
+		}
+	}
+}
+
+// enrichCompletedAgent reads the subagent file to populate the agent's full data
+// after it completes. This is needed because: (1) live tailing only captures
+// tool_use blocks, not result pairing or token counts, and (2) agents without
+// progress lines were never tailed at all.
+func (a *App) enrichCompletedAgent(toolUseID string) {
+	if a.session == nil || a.session.FilePath == "" {
+		return
+	}
+	for _, prompt := range a.session.Prompts {
+		for _, ag := range prompt.Agents {
+			if ag.ToolUseID != toolUseID || ag.ID == "" {
+				continue
+			}
+			sessionDir := filepath.Dir(a.session.FilePath)
+			path := agent.SubagentFilePath(sessionDir, a.session.ID, ag.ID)
+			// Clear live-tailed tool calls — the full parse is authoritative.
+			ag.ToolCalls = nil
+			ag.FilesTouched = nil
+			ag.TokensIn = 0
+			ag.TokensOut = 0
+			if err := agent.EnrichFromFile(ag, path, a.cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "kno-trace: enriching agent %s: %v\n", ag.ID, err)
+			}
+			a.timeline.syncSession(a.session)
+			return
+		}
+	}
 }
 
 // extractTickerEntries pulls TickerEntry values from new raw events.
@@ -459,8 +629,21 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-// cleanup stops the watcher if running. Safe to call multiple times.
+// cleanup stops the watcher and agent watcher if running. Safe to call multiple times.
 func (a *App) cleanup() {
+	if a.agentWatcher != nil {
+		a.agentWatcher.Stop()
+		a.agentWatcher = nil
+	}
+	if a.agentWatcherDone != nil {
+		close(a.agentWatcherDone) // unblocks send callback
+		a.agentWatcherDone = nil
+	}
+	if a.agentWatcherSendCh != nil {
+		close(a.agentWatcherSendCh) // unblocks waitForAgentWatcher
+		a.agentWatcherSendCh = nil
+		a.agentWatcherCh = nil
+	}
 	if a.stopWatcher != nil {
 		a.stopWatcher()
 		a.stopWatcher = nil

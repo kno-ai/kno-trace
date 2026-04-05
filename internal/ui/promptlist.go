@@ -160,7 +160,22 @@ func (pl *PromptList) renderPromptLine(p *model.Prompt, selected bool) string {
 		}
 	}
 	if len(p.Agents) > 0 {
-		badges = append(badges, fmt.Sprintf("⬡%d", len(p.Agents)))
+		running, failed := 0, 0
+		for _, a := range p.Agents {
+			switch a.Status {
+			case model.AgentRunning:
+				running++
+			case model.AgentFailed:
+				failed++
+			}
+		}
+		badge := fmt.Sprintf("⬡%d", len(p.Agents))
+		if running > 0 {
+			badge = fmt.Sprintf("⬡%d active", running)
+		} else if failed > 0 {
+			badge += fmt.Sprintf(" ✗%d", failed)
+		}
+		badges = append(badges, badge)
 	}
 
 	badgeStr := ""
