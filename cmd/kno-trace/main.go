@@ -66,19 +66,19 @@ func main() {
 			os.Exit(1)
 		}
 
-		app := ui.NewAppWithSession(nil, meta, "")
+		app := ui.NewAppWithSession(nil, meta, "", cfg)
 		runTUI(app)
 		return
 	}
 
 	// --pick: always show the picker.
 	if *pick {
-		sessions, err := discovery.ScanAll()
+		sessions, err := scanAllCapped(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error scanning sessions: %v\n", err)
 			os.Exit(1)
 		}
-		app := ui.NewApp(sessions)
+		app := ui.NewApp(sessions, cfg)
 		runTUI(app)
 		return
 	}
@@ -94,23 +94,35 @@ func main() {
 		latest := cwdSessions[0]
 		maxAge := time.Duration(cfg.AutoOpenMaxAgeHours) * time.Hour
 		if time.Since(latest.EndTime) < maxAge {
-			allSessions, _ := discovery.ScanAll() // Error is non-fatal — picker works with nil sessions.
+			allSessions, _ := scanAllCapped(cfg) // Error is non-fatal — picker works with nil sessions.
 			statusMsg := fmt.Sprintf(
 				"Opened latest session for %s — P to pick a different session",
 				latest.ProjectName)
-			app := ui.NewAppWithSession(allSessions, latest, statusMsg)
+			app := ui.NewAppWithSession(allSessions, latest, statusMsg, cfg)
 			runTUI(app)
 			return
 		}
 	}
 
-	sessions, err := discovery.ScanAll()
+	sessions, err := scanAllCapped(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error scanning sessions: %v\n", err)
 		os.Exit(1)
 	}
-	app := ui.NewApp(sessions)
+	app := ui.NewApp(sessions, cfg)
 	runTUI(app)
+}
+
+// scanAllCapped scans sessions and caps to the configured max.
+func scanAllCapped(cfg *config.Config) ([]*model.SessionMeta, error) {
+	sessions, err := discovery.ScanAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) > cfg.MaxPickerSessions {
+		sessions = sessions[:cfg.MaxPickerSessions]
+	}
+	return sessions, nil
 }
 
 func runTUI(app ui.App) {

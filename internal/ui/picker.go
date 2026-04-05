@@ -13,13 +13,13 @@ import (
 
 // pickerModel is the session picker view — the front door to kno-trace.
 type pickerModel struct {
-	sessions []*model.SessionMeta // all sessions, sorted by time desc
-	filtered []int                // indices into sessions after fuzzy filter
-	cursor   int                  // position in filtered list
-	filter   string               // current filter text
-	filtering bool                // true when filter input is active
-	width    int
-	height   int
+	sessions  []*model.SessionMeta
+	filtered  []int // indices into sessions after fuzzy filter
+	cursor    int   // position in filtered list
+	filter    string
+	filtering bool
+	width     int
+	height    int
 }
 
 func newPicker(sessions []*model.SessionMeta) pickerModel {
@@ -46,7 +46,6 @@ func (m *pickerModel) applyFilter() {
 		return
 	}
 
-	// Build string list for fuzzy matching (project names).
 	strs := make([]string, len(m.sessions))
 	for i, s := range m.sessions {
 		strs[i] = s.ProjectName
@@ -62,12 +61,23 @@ func (m *pickerModel) applyFilter() {
 	}
 }
 
-// selectedSession returns the currently highlighted session, or nil.
 func (m *pickerModel) selectedSession() *model.SessionMeta {
 	if len(m.filtered) == 0 || m.cursor < 0 || m.cursor >= len(m.filtered) {
 		return nil
 	}
 	return m.sessions[m.filtered[m.cursor]]
+}
+
+func (m *pickerModel) moveDown() {
+	if m.cursor < len(m.filtered)-1 {
+		m.cursor++
+	}
+}
+
+func (m *pickerModel) moveUp() {
+	if m.cursor > 0 {
+		m.cursor--
+	}
 }
 
 func (m pickerModel) Update(msg tea.Msg) (pickerModel, tea.Cmd) {
@@ -89,6 +99,12 @@ func (m pickerModel) updateFiltering(msg tea.KeyMsg) (pickerModel, tea.Cmd) {
 	case tea.KeyEnter:
 		m.filtering = false
 		return m, nil
+	case tea.KeyUp:
+		m.moveUp()
+		return m, nil
+	case tea.KeyDown:
+		m.moveDown()
+		return m, nil
 	case tea.KeyBackspace:
 		if len(m.filter) > 0 {
 			m.filter = m.filter[:len(m.filter)-1]
@@ -106,13 +122,9 @@ func (m pickerModel) updateFiltering(msg tea.KeyMsg) (pickerModel, tea.Cmd) {
 func (m pickerModel) updateNormal(msg tea.KeyMsg) (pickerModel, tea.Cmd) {
 	switch msg.String() {
 	case "j", "down":
-		if m.cursor < len(m.filtered)-1 {
-			m.cursor++
-		}
+		m.moveDown()
 	case "k", "up":
-		if m.cursor > 0 {
-			m.cursor--
-		}
+		m.moveUp()
 	case "g":
 		m.cursor = 0
 	case "G":
@@ -120,79 +132,108 @@ func (m pickerModel) updateNormal(msg tea.KeyMsg) (pickerModel, tea.Cmd) {
 	case "/":
 		m.filtering = true
 		m.filter = ""
+	case "esc":
+		if m.filter != "" {
+			m.resetFilter()
+		}
 	}
 	return m, nil
 }
 
 func (m pickerModel) View() string {
 	if len(m.sessions) == 0 {
-		return EmptyStateStyle.Render("No sessions found — run Claude Code in a project directory first")
+		return EmptyStateStyle.Render("No sessions found — run Claude Code in a project directory first") +
+			"\n\n" + StatusBarStyle.Render(KeyStyle.Render("q")+" "+KeyDescStyle.Render("quit"))
 	}
 
 	var b strings.Builder
 
 	// Title.
-	title := TitleStyle.Render("kno-trace — session picker")
-	b.WriteString(title)
-	b.WriteString("\n\n")
+	b.WriteString(TitleStyle.Render("kno-trace — session picker"))
+	b.WriteString("\n")
 
-	// Filter indicator.
+	// Filter bar.
 	if m.filtering {
 		b.WriteString(FilterPromptStyle.Render("/ "))
 		b.WriteString(m.filter)
-		b.WriteString("_\n\n")
+		b.WriteString("_  ")
+		b.WriteString(DimStyle.Render("enter to keep · esc to clear"))
 	} else if m.filter != "" {
 		b.WriteString(FilterPromptStyle.Render("filter: "))
 		b.WriteString(MutedStyle.Render(m.filter))
-		b.WriteString("\n\n")
+		b.WriteString("  ")
+		b.WriteString(DimStyle.Render("/ to edit · esc to clear"))
 	}
+	b.WriteString("\n")
 
 	if len(m.filtered) == 0 {
 		b.WriteString(EmptyStateStyle.Render("No matches"))
+		b.WriteString("\n")
+		b.WriteString(m.statusBar())
 		return b.String()
 	}
 
-	// Calculate visible range for scrolling.
-	listHeight := m.height - 8 // Reserve space for title, filter, status bar
-	if listHeight < 3 {
-		listHeight = 3
+	// Build all lines first, then window them.
+	type renderedLine struct {
+		text      string
+		itemIndex int // -1 for headers/dividers
 	}
+	var lines []renderedLine
 
-	startIdx := 0
-	if m.cursor >= listHeight {
-		startIdx = m.cursor - listHeight + 1
-	}
-	endIdx := startIdx + listHeight
-	if endIdx > len(m.filtered) {
-		endIdx = len(m.filtered)
-	}
-
-	// Render sessions grouped by date.
 	lastDate := ""
-	for vi := startIdx; vi < endIdx; vi++ {
+	for vi := 0; vi < len(m.filtered); vi++ {
 		idx := m.filtered[vi]
 		s := m.sessions[idx]
 
 		date := FormatDate(s.EndTime)
 		if date != lastDate {
 			if lastDate != "" {
-				b.WriteString("\n")
+				lines = append(lines, renderedLine{"", -1})
 			}
-			b.WriteString(DateHeaderStyle.Render(date))
-			b.WriteString("\n")
+			lines = append(lines, renderedLine{DateHeaderStyle.Render(date), -1})
 			lastDate = date
 		}
 
 		isSelected := vi == m.cursor
-		line := m.formatSessionLine(s, isSelected)
-		b.WriteString(line)
+		lines = append(lines, renderedLine{m.formatSessionLine(s, isSelected), vi})
+	}
+
+	// Find the rendered line index for the cursor.
+	cursorLine := 0
+	for i, l := range lines {
+		if l.itemIndex == m.cursor {
+			cursorLine = i
+			break
+		}
+	}
+
+	// Window the lines around the cursor.
+	// Reserve: 2 lines for title+filter, 2 for status bar + padding.
+	listHeight := m.height - 4
+	if listHeight < 5 {
+		listHeight = 5
+	}
+
+	startLine := 0
+	if cursorLine >= listHeight {
+		startLine = cursorLine - listHeight/2
+	}
+	if startLine < 0 {
+		startLine = 0
+	}
+	endLine := startLine + listHeight
+	if endLine > len(lines) {
+		endLine = len(lines)
+		startLine = max(0, endLine-listHeight)
+	}
+
+	for i := startLine; i < endLine; i++ {
+		b.WriteString(lines[i].text)
 		b.WriteString("\n")
 	}
 
 	// Status bar.
-	b.WriteString("\n")
-	status := m.statusBar()
-	b.WriteString(status)
+	b.WriteString(m.statusBar())
 
 	return b.String()
 }

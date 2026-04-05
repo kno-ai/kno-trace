@@ -39,6 +39,9 @@ type Config struct {
 	// These are not tuning knobs; normal sessions are far below these limits.
 	MaxFileSizeMB int `yaml:"max_file_size_mb"` // reject session files above this size
 	MaxLineSizeMB int `yaml:"max_line_size_mb"` // skip individual JSONL lines above this size
+
+	// Max sessions shown in the picker. Most recent sessions are kept.
+	MaxPickerSessions int `yaml:"max_picker_sessions"`
 }
 
 // Default returns a Config with all default values.
@@ -58,6 +61,7 @@ func Default() *Config {
 		MaxSnapshotsPerFile:    10,
 		MaxFileSizeMB:          1024, // 1GB
 		MaxLineSizeMB:          100,  // 100MB
+		MaxPickerSessions:      200,
 	}
 }
 
@@ -113,6 +117,9 @@ func Load() *Config {
 	}
 	if override.MaxLineSizeMB != 0 {
 		cfg.MaxLineSizeMB = override.MaxLineSizeMB
+	}
+	if override.MaxPickerSessions != 0 {
+		cfg.MaxPickerSessions = override.MaxPickerSessions
 	}
 
 	return cfg

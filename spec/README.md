@@ -760,6 +760,7 @@ max_snapshots_per_file: 10  # max WriteSnapshots retained per file (oldest evict
 # "too large" warnings on legitimate session files.
 max_file_size_mb: 1024      # reject session files above this (default 1GB)
 max_line_size_mb: 100       # skip individual JSONL lines above this (default 100MB)
+max_picker_sessions: 200    # max sessions shown in picker (most recent kept)
 ```
 
 **Implementation notes:**
