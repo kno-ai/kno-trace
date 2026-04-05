@@ -146,3 +146,10 @@ Hard-won knowledge from building each milestone. Read before starting a new mile
 - **`enrichCompletedAgent` is the authoritative enrichment path.** When an agent completes, its live-tailed tool calls are replaced by a full parse of the subagent file. This ensures result pairing, token accumulation, and FilesTouched are complete — even for agents that were being tailed live.
 - **Never write to the user's filesystem.** The agent watcher must not create the `subagents/` directory. If it doesn't exist yet, watch the parent session directory for its creation instead. Claude Code creates it when the first agent spawns.
 - **The agent watcher channel uses `interface{}` not `tea.Msg`.** The `agent` package doesn't import bubbletea. The UI wraps agent watcher messages in `msgAgentWatcherEvent` for Bubbletea's message loop, using the same channel-relay pattern as the parent session watcher.
+
+### M5: Agent Tree & Swimlane (Layers 3-4)
+
+- **Detail pane `agentCursor` must be initialized to -1.** Go's zero value for int is 0, which means "first agent focused." Use `Detail{agentCursor: -1}` everywhere a Detail is created. `ResetExpansion` also sets it to -1.
+- **Stale expansion paths auto-recover.** If the expanded agent's ToolUseID no longer exists (session rebuilt, agent removed), `resolveExpandedAgent` returns nil and the View falls through to the prompt-level rendering. No crash, no stale UI.
+- **Live conflict detection is incremental.** `checkLiveConflict` runs on each `MsgAgentToolCall` and checks if the file is already in another active agent's `FilesTouched`. Avoids re-running full `detectFileConflicts` on every tool call.
+- **Swimlane and timeline share session state.** Both views call `syncSession` on the same `*model.Session`. Live updates from the agent watcher flow to both views regardless of which is currently displayed.

@@ -370,6 +370,11 @@ func (a *App) handleAgentWatcherMsg(msg interface{}) tea.Cmd {
 							ag.FilesTouched = append(ag.FilesTouched, msg.ToolCall.Path)
 						}
 					}
+					// Live conflict detection: check if a write/edit touches
+					// a file another active parallel agent also touched.
+					if msg.ToolCall.Path != "" && agent.IsFilePath(msg.ToolCall.Type) {
+						a.checkLiveConflict(prompt, ag, msg.ToolCall.Path)
+					}
 					a.timeline.syncSession(a.session)
 					a.swimlane.syncSession(a.session)
 					return nil
@@ -385,6 +390,39 @@ func (a *App) handleAgentWatcherMsg(msg interface{}) tea.Cmd {
 		// the tree builder's enrichment on tool_result.
 	}
 	return nil
+}
+
+// checkLiveConflict checks if a file touched by one agent is also touched by
+// another active parallel agent in the same prompt. Adds WarnAgentConflict if so.
+func (a *App) checkLiveConflict(prompt *model.Prompt, currentAgent *model.AgentNode, path string) {
+	if len(prompt.Agents) < 2 {
+		return
+	}
+	for _, other := range prompt.Agents {
+		if other.ToolUseID == currentAgent.ToolUseID {
+			continue
+		}
+		if other.Status != model.AgentRunning && other.Status != model.AgentSucceeded {
+			continue
+		}
+		for _, otherPath := range other.FilesTouched {
+			if otherPath == path {
+				// Check if this conflict is already warned.
+				msg := fmt.Sprintf("file conflict: %s touched by %s, %s",
+					path, currentAgent.Label, other.Label)
+				for _, w := range prompt.Warnings {
+					if w.Type == model.WarnAgentConflict && w.Message == msg {
+						return // Already warned.
+					}
+				}
+				prompt.Warnings = append(prompt.Warnings, model.Warning{
+					Type:    model.WarnAgentConflict,
+					Message: msg,
+				})
+				return
+			}
+		}
+	}
 }
 
 // notifyAgentWatcher checks new events for Agent tool_use, tool_result, and
