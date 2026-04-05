@@ -34,7 +34,7 @@ func newTimeline(session *model.Session) timelineModel {
 	return timelineModel{
 		session: session,
 		list:    NewPromptList(session),
-		detail:  Detail{},
+		detail:  Detail{agentCursor: -1},
 	}
 }
 
@@ -358,6 +358,8 @@ func (t timelineModel) statsBar() string {
 
 	// Key hints.
 	keys := KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("nav") + "  " +
+		KeyStyle.Render("tab") + " " + KeyDescStyle.Render("agents") + "  " +
+		KeyStyle.Render("s") + " " + KeyDescStyle.Render("swimlane") + "  " +
 		KeyStyle.Render("/") + " " + KeyDescStyle.Render("filter") + "  " +
 		KeyStyle.Render("P") + " " + KeyDescStyle.Render("picker") + "  " +
 		KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")

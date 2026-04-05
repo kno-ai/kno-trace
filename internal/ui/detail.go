@@ -13,6 +13,16 @@ type Detail struct {
 	Width  int
 	Height int
 	Offset int // scroll offset for long content
+
+	// Agent expansion state. When non-empty, we're viewing an expanded agent.
+	// Each entry is the ToolUseID of the agent at that depth level.
+	// Empty = viewing the prompt-level summary.
+	expandedPath []string
+
+	// agentCursor tracks which agent is focused for enter/navigation.
+	// -1 = no agent focused (tool calls or text area has focus).
+	// Must be initialized to -1 via NewDetail or ResetExpansion.
+	agentCursor int
 }
 
 // View renders the detail pane for the given prompt.
@@ -28,6 +38,18 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 		w = 50
 	}
 
+	// If an agent is expanded, render the agent detail view instead.
+	if len(d.expandedPath) > 0 {
+		ag := d.resolveExpandedAgent(p)
+		if ag != nil {
+			d.renderExpandedAgent(&b, p, ag, isLive, w)
+			return d.applyScroll(b.String())
+		}
+		// Path is stale — agent was removed. Fall through to prompt view.
+		d.expandedPath = nil
+		d.agentCursor = -1
+	}
+
 	// Header: index, time, duration, model, tokens, context%.
 	d.renderHeader(&b, p, isLive)
 	b.WriteString("\n")
@@ -35,7 +57,6 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 	// Human text.
 	text := strings.TrimSpace(p.HumanText)
 	if text != "" {
-		// Wrap long text to width.
 		if len(text) > w*3 {
 			text = text[:w*3] + "..."
 		}
@@ -49,12 +70,14 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 	// Tool calls.
 	d.renderToolCalls(&b, p)
 
-	// Agents (collapsed).
-	d.renderAgents(&b, p, isLive)
+	// Agents — with cursor for selection.
+	d.renderAgentsWithCursor(&b, p, isLive)
 
-	content := b.String()
+	return d.applyScroll(b.String())
+}
 
-	// Apply scroll offset, clamped to content bounds.
+// applyScroll handles vertical scrolling within the detail content.
+func (d *Detail) applyScroll(content string) string {
 	lines := strings.Split(content, "\n")
 	visible := d.Height
 	if visible <= 0 {
@@ -73,8 +96,66 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 	if len(lines) > visible {
 		lines = lines[:visible]
 	}
-
 	return strings.Join(lines, "\n")
+}
+
+// IsAgentFocused returns true if an agent is currently focused by the cursor.
+func (d *Detail) IsAgentFocused() bool {
+	return d.agentCursor >= 0
+}
+
+// IsAgentExpanded returns true if an agent is currently expanded (drilled into).
+func (d *Detail) IsAgentExpanded() bool {
+	return len(d.expandedPath) > 0
+}
+
+// ExpandAgent expands the currently focused agent (enter key).
+// Returns true if an agent was expanded.
+func (d *Detail) ExpandAgent(agents []*model.AgentNode) bool {
+	if d.agentCursor < 0 || d.agentCursor >= len(agents) {
+		return false
+	}
+	ag := agents[d.agentCursor]
+	d.expandedPath = append(d.expandedPath, ag.ToolUseID)
+	d.agentCursor = -1
+	d.Offset = 0
+	return true
+}
+
+// CollapseAgent pops one level of agent expansion (esc key).
+// Returns true if a level was collapsed (false = already at prompt level).
+func (d *Detail) CollapseAgent() bool {
+	if len(d.expandedPath) == 0 {
+		return false
+	}
+	d.expandedPath = d.expandedPath[:len(d.expandedPath)-1]
+	d.agentCursor = -1
+	d.Offset = 0
+	return true
+}
+
+// AgentCursorDown moves the agent cursor down within the agent list.
+func (d *Detail) AgentCursorDown(agentCount int) {
+	if agentCount == 0 {
+		return
+	}
+	if d.agentCursor < agentCount-1 {
+		d.agentCursor++
+	}
+}
+
+// AgentCursorUp moves the agent cursor up. -1 means exiting agent focus.
+func (d *Detail) AgentCursorUp() {
+	if d.agentCursor > -1 {
+		d.agentCursor--
+	}
+}
+
+// ResetExpansion clears all agent expansion state.
+// Called when the user navigates to a different prompt.
+func (d *Detail) ResetExpansion() {
+	d.expandedPath = nil
+	d.agentCursor = -1
 }
 
 func (d *Detail) ScrollDown() {
@@ -163,6 +244,12 @@ func (d *Detail) renderWarnings(b *strings.Builder, p *model.Prompt) {
 		case model.WarnLoopDetected:
 			b.WriteString(MutedStyle.Foreground(ColorYellow).Render("⟳ " + w.Message))
 			b.WriteString("\n")
+		case model.WarnAgentConflict:
+			b.WriteString(MutedStyle.Foreground(ColorRed).Render("⚠ " + w.Message))
+			b.WriteString("\n")
+		case model.WarnAgentUnlinked:
+			b.WriteString(MutedStyle.Foreground(ColorYellow).Render("⚠ " + w.Message))
+			b.WriteString("\n")
 		case model.WarnMCPExternal:
 			// Shown inline with tool calls instead.
 		case model.WarnContextHigh, model.WarnContextCritical:
@@ -225,78 +312,255 @@ func (d *Detail) renderToolCalls(b *strings.Builder, p *model.Prompt) {
 	}
 }
 
-func (d *Detail) renderAgents(b *strings.Builder, p *model.Prompt, isLive bool) {
-	for _, agent := range p.Agents {
-		agentType := agent.SubagentType
-		if agentType == "" {
-			agentType = "agent"
+// renderAgentsWithCursor renders agents with a selection cursor for enter-to-expand.
+func (d *Detail) renderAgentsWithCursor(b *strings.Builder, p *model.Prompt, isLive bool) {
+	for i, agent := range p.Agents {
+		isFocused := d.agentCursor == i
+		d.renderOneAgent(b, agent, p, isLive, isFocused, "")
+	}
+}
+
+// renderExpandedAgent renders the detailed view of an expanded agent.
+func (d *Detail) renderExpandedAgent(b *strings.Builder, p *model.Prompt, ag *model.AgentNode, isLive bool, w int) {
+	// Breadcrumb: #N > subagent-1 > subagent-1a
+	crumbs := fmt.Sprintf("#%d", p.Index+1)
+	agents := p.Agents
+	for i, toolUseID := range d.expandedPath {
+		for _, a := range agents {
+			if a.ToolUseID == toolUseID {
+				crumbs += " > " + a.Label
+				if i < len(d.expandedPath)-1 {
+					agents = a.Children
+				}
+				break
+			}
+		}
+	}
+	b.WriteString(SelectedStyle.Render(crumbs))
+	b.WriteString("\n\n")
+
+	// Agent header.
+	typeLabel := ag.SubagentType
+	if typeLabel == "" {
+		typeLabel = "agent"
+	}
+	if ag.ModelName != "" && ag.ModelName != p.ModelName {
+		typeLabel += ", " + shortModel(ag.ModelName)
+	}
+
+	statusStr := string(ag.Status)
+	switch ag.Status {
+	case model.AgentRunning:
+		if !ag.StartTime.IsZero() && isLive {
+			statusStr = "running — " + FormatDuration(time.Since(ag.StartTime))
+		}
+	case model.AgentSucceeded:
+		statusStr = "done"
+		if ag.Duration > 0 {
+			statusStr += " — " + FormatDuration(ag.Duration)
+		}
+	case model.AgentFailed:
+		statusStr = "✗ failed"
+		if ag.Duration > 0 {
+			statusStr += " — " + FormatDuration(ag.Duration)
+		}
+	}
+	b.WriteString(fmt.Sprintf("  ⬡ %s (%s) — %s\n", ag.Label, typeLabel, statusStr))
+
+	// Badges.
+	var badges []string
+	if ag.IsParallel {
+		badges = append(badges, "parallel")
+	}
+	if len(badges) > 0 {
+		b.WriteString("  " + DimStyle.Render("["+strings.Join(badges, ", ")+"]") + "\n")
+	}
+	b.WriteString("\n")
+
+	// Task description.
+	if ag.TaskDescription != "" {
+		b.WriteString(MutedStyle.Render("  Asked: ") + Truncate(ag.TaskDescription, w-10) + "\n")
+	}
+
+	// Scope summary.
+	if len(ag.FilesTouched) > 0 {
+		b.WriteString(MutedStyle.Render(fmt.Sprintf("  Touched: %d files", len(ag.FilesTouched))) + "\n")
+		for _, path := range ag.FilesTouched {
+			// Count operations per file.
+			var ops []string
+			wc, rc, ec := 0, 0, 0
+			for _, tc := range ag.ToolCalls {
+				if tc.Path != path {
+					continue
+				}
+				switch tc.Type {
+				case model.ToolWrite:
+					wc++
+				case model.ToolRead:
+					rc++
+				case model.ToolEdit:
+					ec++
+				}
+			}
+			if wc > 0 {
+				ops = append(ops, fmt.Sprintf("W×%d", wc))
+			}
+			if rc > 0 {
+				ops = append(ops, fmt.Sprintf("R×%d", rc))
+			}
+			if ec > 0 {
+				ops = append(ops, fmt.Sprintf("E×%d", ec))
+			}
+			opStr := ""
+			if len(ops) > 0 {
+				opStr = " " + DimStyle.Render("("+strings.Join(ops, " ")+")")
+			}
+			b.WriteString("    " + Truncate(path, w-20) + opStr + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Tokens.
+	if ag.TokensIn > 0 || ag.TokensOut > 0 {
+		b.WriteString(MutedStyle.Render(fmt.Sprintf("  Tokens: %s in / %s out",
+			FormatTokens(ag.TokensIn), FormatTokens(ag.TokensOut))))
+		b.WriteString("\n\n")
+	}
+
+	// Full tool call list.
+	if len(ag.ToolCalls) > 0 {
+		b.WriteString(MutedStyle.Render("  Tool calls:") + "\n")
+		for _, tc := range ag.ToolCalls {
+			icon := toolIcon(tc.Type)
+			line := icon + " "
+			switch tc.Type {
+			case model.ToolWrite:
+				delta := fmt.Sprintf("+%d", strings.Count(tc.Content, "\n"))
+				line += fmt.Sprintf("%s %s", tc.Path, DimStyle.Render(delta))
+			case model.ToolEdit:
+				added := strings.Count(tc.NewStr, "\n")
+				removed := strings.Count(tc.OldStr, "\n")
+				line += fmt.Sprintf("%s %s", tc.Path, DimStyle.Render(fmt.Sprintf("+%d -%d", added, removed)))
+			case model.ToolRead:
+				line += tc.Path
+			case model.ToolBash:
+				line += Truncate(tc.Command, w-15)
+			case model.ToolGlob, model.ToolGrep:
+				line += DimStyle.Render(tc.Path)
+			case model.ToolMCP:
+				line += fmt.Sprintf("%s/%s", tc.MCPServerName, tc.MCPToolName)
+			default:
+				line += DimStyle.Render(string(tc.Type))
+			}
+			b.WriteString("    " + line + "\n")
+		}
+	} else if ag.Status == model.AgentRunning {
+		b.WriteString(DimStyle.Render("  Waiting for tool calls...") + "\n")
+	}
+
+	// Nested agents.
+	if len(ag.Children) > 0 {
+		b.WriteString("\n" + MutedStyle.Render("  Nested agents:") + "\n")
+		for i, child := range ag.Children {
+			isFocused := d.agentCursor == i
+			d.renderOneAgent(b, child, p, isLive, isFocused, "  ")
+		}
+	}
+}
+
+// resolveExpandedAgent walks the expansion path to find the target agent.
+func (d *Detail) resolveExpandedAgent(p *model.Prompt) *model.AgentNode {
+	agents := p.Agents
+	var found *model.AgentNode
+	for _, toolUseID := range d.expandedPath {
+		found = nil
+		for _, ag := range agents {
+			if ag.ToolUseID == toolUseID {
+				found = ag
+				agents = ag.Children
+				break
+			}
+		}
+		if found == nil {
+			return nil // Path is stale.
+		}
+	}
+	return found
+}
+
+// renderOneAgent renders a single agent line with optional focus indicator.
+func (d *Detail) renderOneAgent(b *strings.Builder, agent *model.AgentNode, p *model.Prompt, isLive bool, isFocused bool, indent string) {
+	agentType := agent.SubagentType
+	if agentType == "" {
+		agentType = "agent"
+	}
+
+	typeLabel := agentType
+	if agent.ModelName != "" && agent.ModelName != p.ModelName {
+		typeLabel += ", " + shortModel(agent.ModelName)
+	}
+
+	desc := Truncate(agent.TaskDescription, d.Width-30)
+
+	var suffixes []string
+	if agent.IsParallel {
+		suffixes = append(suffixes, "parallel")
+	}
+	suffix := ""
+	if len(suffixes) > 0 {
+		suffix = "  " + DimStyle.Render("["+strings.Join(suffixes, ", ")+"]")
+	}
+
+	// Focus indicator.
+	cursor := "  "
+	if isFocused {
+		cursor = SelectedStyle.Render("> ")
+	}
+	prefix := indent + cursor
+
+	switch agent.Status {
+	case model.AgentRunning:
+		var parts []string
+		if n := len(agent.ToolCalls); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d tools so far", n))
+		}
+		if !agent.StartTime.IsZero() && isLive {
+			parts = append(parts, FormatDuration(time.Since(agent.StartTime)))
+		}
+		meta := ""
+		if len(parts) > 0 {
+			meta = " — " + strings.Join(parts, " — ")
+		}
+		b.WriteString(fmt.Sprintf("%s⬡ %s (%s) — running%s%s\n",
+			prefix, agent.Label, typeLabel, DimStyle.Render(meta), suffix))
+		if desc != "" {
+			b.WriteString(indent + "    " + DimStyle.Render(desc) + "\n")
 		}
 
-		// Build the type label, including model when different from parent.
-		typeLabel := agentType
-		if agent.ModelName != "" && agent.ModelName != p.ModelName {
-			typeLabel += ", " + shortModel(agent.ModelName)
+	case model.AgentSucceeded:
+		meta := ""
+		if agent.TotalToolUseCount > 0 {
+			meta = fmt.Sprintf(" — %d tools, %s tokens, %s",
+				agent.TotalToolUseCount,
+				FormatTokens(agent.TotalTokens),
+				FormatDuration(agent.Duration))
 		}
+		b.WriteString(fmt.Sprintf("%s⬡ ✓ %s (%s) — done%s%s\n",
+			prefix, agent.Label, typeLabel, DimStyle.Render(meta), suffix))
 
-		desc := Truncate(agent.TaskDescription, d.Width-30)
-
-		// Suffix badges (parallel, conflict).
-		var suffixes []string
-		if agent.IsParallel {
-			suffixes = append(suffixes, "parallel")
+	case model.AgentFailed:
+		meta := ""
+		if agent.TotalToolUseCount > 0 {
+			meta = fmt.Sprintf(" — %d tools, %s",
+				agent.TotalToolUseCount,
+				FormatDuration(agent.Duration))
 		}
-		suffix := ""
-		if len(suffixes) > 0 {
-			suffix = "  " + DimStyle.Render("["+strings.Join(suffixes, ", ")+"]")
-		}
+		b.WriteString(fmt.Sprintf("%s⬡ ✗ %s (%s) — failed%s%s\n",
+			prefix, agent.Label, typeLabel, MutedStyle.Foreground(ColorRed).Render(meta), suffix))
 
-		switch agent.Status {
-		case model.AgentRunning:
-			var parts []string
-			if n := len(agent.ToolCalls); n > 0 {
-				parts = append(parts, fmt.Sprintf("%d tools so far", n))
-			}
-			if !agent.StartTime.IsZero() && isLive {
-				parts = append(parts, FormatDuration(time.Since(agent.StartTime)))
-			}
-			meta := ""
-			if len(parts) > 0 {
-				meta = " — " + strings.Join(parts, " — ")
-			}
-			b.WriteString(fmt.Sprintf("  ⬡ %s (%s) — running%s%s\n",
-				agent.Label, typeLabel, DimStyle.Render(meta), suffix))
-			if desc != "" {
-				b.WriteString("    " + DimStyle.Render(desc) + "\n")
-			}
-
-		case model.AgentSucceeded:
-			meta := ""
-			if agent.TotalToolUseCount > 0 {
-				meta = fmt.Sprintf(" — %d tools, %s tokens, %s",
-					agent.TotalToolUseCount,
-					FormatTokens(agent.TotalTokens),
-					FormatDuration(agent.Duration))
-			}
-			line := fmt.Sprintf("  ⬡ ✓ %s (%s) — done%s%s",
-				agent.Label, typeLabel, DimStyle.Render(meta), suffix)
-			b.WriteString(line + "\n")
-
-		case model.AgentFailed:
-			meta := ""
-			if agent.TotalToolUseCount > 0 {
-				meta = fmt.Sprintf(" — %d tools, %s",
-					agent.TotalToolUseCount,
-					FormatDuration(agent.Duration))
-			}
-			line := fmt.Sprintf("  ⬡ ✗ %s (%s) — failed%s%s",
-				agent.Label, typeLabel, MutedStyle.Foreground(ColorRed).Render(meta), suffix)
-			b.WriteString(line + "\n")
-
-		default:
-			line := fmt.Sprintf("  ⬡ %s (%s) — %s%s",
-				agent.Label, typeLabel, DimStyle.Render(desc), suffix)
-			b.WriteString(line + "\n")
-		}
+	default:
+		b.WriteString(fmt.Sprintf("%s⬡ %s (%s) — %s%s\n",
+			prefix, agent.Label, typeLabel, DimStyle.Render(desc), suffix))
 	}
 }
 
