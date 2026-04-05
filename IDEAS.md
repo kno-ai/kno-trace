@@ -4,6 +4,12 @@ Ideas for post-v1, organized by priority. Priority reflects: strength of user de
 
 **Guiding principle:** The strongest ideas make the invisible visible without adding opinion. kno-trace shows facts the JSONL already contains but that nobody can see today.
 
+**Priority framework:**
+- **Priority 1** — Broad audience, high daily-driver value, achievable with existing infrastructure
+- **Priority 2** — Clear demand, distinct kno-trace angle, moderate effort
+- **Priority 3** — Useful but narrower audience or higher effort
+- **Priority 4** — Speculative, constrained, or niche
+
 ---
 
 ## Promoted to v1 Milestones
@@ -54,9 +60,382 @@ Unicode sparkline (▁▂▃▄▅▆▇█) showing context% trajectory across 
 
 M5 already detects `WarnAgentConflict` when parallel agents write to the same path and highlights shared files in the swimlane. The core idea is implemented. A richer standalone visualization (Venn diagram of agent file scopes) could be added post-v1 but the essential signal is there.
 
+### Subagent File Reading + Live Tailing → M5 (promoted)
+
+**Promoted to v1.** M5 now reads subagent JSONL files for full tool call history AND tails them in real-time during live sessions. Without this, the swimlane would show empty lanes for agents that don't emit progress lines — which undermines the flagship view. M6's replay engine includes agent tool calls in its file history (interleaved by timestamp), so the heatmap and diff view reflect agent modifications too. See M5 and M6 specs for details.
+
 ---
 
-## Priority 1 — High demand, unique to kno-trace, first post-v1 targets
+## Priority 1 — Broad audience, high daily-driver value, fully deterministic
+
+These serve every kno-trace user, not just niche workflows. Every value displayed is derived exactly from the JSONL — no external data, no editorial judgment, no configurable thresholds that change the meaning of what's shown.
+
+**Top 3 — build these first, in this order:**
+
+---
+
+### 1. Notification / Alert Hooks
+
+System notifications when key events fire: context exceeds threshold, loop detected, agent failed, session idle too long. Makes the control room work even when the developer isn't looking at it.
+
+**Why #1:** The control room metaphor breaks if you have to keep watching it. A real control room has alarms. Without notifications, kno-trace is a dashboard you must actively stare at — which defeats the "leave it running in a second terminal" vision. This is the lowest-effort, highest-impact feature on the list because every trigger condition is already computed by v1.
+
+**Determinism:** Fully deterministic. Alert triggers are exact thresholds on exact values already computed: `ContextPct >= N`, `WarnLoopDetected` presence, `AgentStatus == AgentFailed`, ticker quiet state timer. No inference, no heuristics.
+
+**Design:**
+- Config-driven alert rules:
+```yaml
+alerts:
+  context_high:
+    enabled: true
+    # uses existing config.ContextHighPct threshold — no new threshold needed
+  context_critical:
+    enabled: true
+  loop_detected:
+    enabled: true
+  agent_failed:
+    enabled: true
+  idle:
+    enabled: false
+    seconds: 120
+  cooldown_seconds: 60  # per alert type, prevents spam
+  # Optional: custom command instead of system notification
+  # command: "my-custom-notifier"
+```
+
+**Implementation plan:**
+
+```
+internal/alert/
+├── alert.go      # AlertManager type, event dispatch, cooldown tracking
+├── notify.go     # platform-native notification delivery
+└── alert_test.go
+```
+
+**`internal/alert/alert.go`** — the core dispatcher:
+```go
+// AlertManager receives session events and fires notifications.
+// It is owned by App and called from handleWatcherMsg / ticker update paths.
+type AlertManager struct {
+    cfg       *config.Config
+    lastFired map[AlertType]time.Time // cooldown tracking per type
+    notifier  Notifier
+}
+
+type AlertType string
+const (
+    AlertContextHigh     AlertType = "context_high"
+    AlertContextCritical AlertType = "context_critical"
+    AlertLoopDetected    AlertType = "loop_detected"
+    AlertAgentFailed     AlertType = "agent_failed"
+    AlertIdle            AlertType = "idle"
+)
+
+// Check is called after each event cycle. It inspects the current session
+// state and fires alerts that haven't been fired within the cooldown window.
+func (am *AlertManager) Check(session *model.Session, prompt *model.Prompt) {
+    // Context alerts: check prompt.ContextPct against config thresholds
+    // Loop alerts: check prompt.Warnings for WarnLoopDetected
+    // Agent alerts: check prompt.Agents for AgentFailed status
+    // All checks are simple field reads on existing model types
+}
+```
+
+**`internal/alert/notify.go`** — platform delivery:
+```go
+// Notifier sends a system notification. No external dependencies.
+type Notifier struct {
+    customCmd string // if set, exec this instead of platform default
+}
+
+// Send delivers a notification via the platform-native mechanism.
+// Falls back silently if the notification command is unavailable.
+func (n *Notifier) Send(title, body string) error {
+    if n.customCmd != "" {
+        return exec.Command("sh", "-c", n.customCmd).Run()
+    }
+    switch runtime.GOOS {
+    case "darwin":
+        // osascript -e 'display notification "body" with title "title"'
+    case "linux":
+        // notify-send "title" "body"
+    case "windows":
+        // powershell -Command "New-BurntToastNotification ..."
+    }
+}
+```
+
+**Integration points in existing code:**
+- `App.handleWatcherMsg()` in [app.go](internal/ui/app.go) — after `RebuildActivePrompt` returns and after `extractTickerEntries`, call `am.Check(a.session, activePrompt)`
+- `Ticker` quiet state — when the ticker's `timeSinceLastActivity` exceeds the idle threshold, fire `AlertIdle`
+- Config: add `Alerts` struct to `config.Config`, loaded with the same merge-defaults pattern
+
+**What hooks into what (existing infrastructure):**
+- `classifyPrompt()` in [classify.go](internal/parser/classify.go) already generates `WarnContextHigh`, `WarnContextCritical`, `WarnLoopDetected` — alerts simply check for their presence
+- `AgentNode.Status` in [types.go](internal/model/types.go) already tracks `AgentFailed` — alerts check this field
+- Ticker already tracks quiet state with timestamp — alerts read the gap
+
+**Effort estimate:** ~200 lines new code + ~30 lines config additions. No new dependencies. No model changes. One new package, three integration points in existing code.
+
+---
+
+### 2. Compaction Diff — What Got Forgotten
+
+When `/compact` runs, context is summarized and detail is lost. The JSONL has `compact_boundary` with `preTokens`. kno-trace shows **what prompts existed before vs. after the compaction boundary** — helping the user understand what the agent "forgot."
+
+**Why #2:** Nobody visualizes this. Users know compaction happened but have no way to understand its impact without reading raw JSONL. The lowest-effort feature on the list — M3 already marks compact boundaries with `── compact ──` dividers in [promptlist.go](internal/ui/promptlist.go). This extends that visual treatment to actually be informative.
+
+**Determinism:** Fully deterministic. `Session.CompactAt` stores exact prompt indices from `compact_boundary` lines in the JSONL. Pre/post classification is index comparison. `preTokens` is an exact value from the JSONL. No inference.
+
+**Design:**
+- Prompts before the compaction boundary are visually dimmed — they exist in the JSONL but are outside Claude's active memory
+- The compact divider is enhanced with token delta: `── compact ── 142k → 28k tokens ──`
+- Dimmed prompts are still navigable (user can drill in) but their "forgotten" status is visible at a glance
+- Multiple compactions: each boundary dims everything before it. Only prompts after the *last* compaction are "in memory"
+
+**Implementation plan:**
+
+**`internal/model/types.go`** — add pre-tokens to compaction data:
+```go
+// CompactEvent records a compaction point in the session.
+type CompactEvent struct {
+    PromptIdx int   // prompt index where compact occurred
+    PreTokens int   // token count before compaction (from JSONL)
+    PostTokens int  // token count after compaction (from next assistant message)
+}
+
+// Replace CompactAt []int with:
+// CompactEvents []CompactEvent
+```
+
+**`internal/parser/builder.go`** — extract `preTokens` from `compact_boundary`:
+```go
+case "system":
+    if evt.Subtype == "compact_boundary" && currentPrompt != nil {
+        ce := model.CompactEvent{
+            PromptIdx: currentPrompt.Index,
+            PreTokens: evt.CompactPreTokens, // already in RawEvent from JSONL parse
+        }
+        s.CompactEvents = append(s.CompactEvents, ce)
+    }
+```
+
+**`internal/ui/promptlist.go`** — dim pre-compaction prompts:
+```go
+// In renderPromptItem():
+// Check if this prompt is before the last compaction boundary
+isPreCompact := false
+if len(pl.CompactEvents) > 0 {
+    lastCompact := pl.CompactEvents[len(pl.CompactEvents)-1]
+    isPreCompact = p.Index < lastCompact.PromptIdx
+}
+
+// Apply DimStyle to the entire prompt line if pre-compact
+if isPreCompact {
+    line = DimStyle.Render(line)
+}
+
+// Enhanced compact divider with token info:
+// ── compact ── 142,031 → 28,412 tokens ──
+```
+
+**`internal/ui/detail.go`** — pre-compact indicator in detail pane:
+- When viewing a pre-compact prompt, show a subtle header: `⚠ this prompt is outside Claude's active context (pre-compact)`
+- Factual, not a warning — just making the boundary visible
+
+**What hooks into what (existing infrastructure):**
+- `builder.go` already handles `compact_boundary` at line 143 and 508 — extend to extract `preTokens`
+- `promptlist.go` already has `CompactAt map[int]bool` at line 19 — replace with `CompactEvents`
+- `promptlist.go` already renders `── compact ──` divider at line 108 — enhance with token delta
+- `timeline.go` already syncs `CompactAt` at line 196 — update to sync `CompactEvents`
+- `RawEvent` in [jsonl.go](internal/parser/jsonl.go) likely already parses `preTokens` from system lines — verify, add if missing
+
+**Effort estimate:** ~80 lines changed across 4 files. No new packages. No new dependencies. Mostly modifying existing rendering logic.
+
+---
+
+### 3. "What Did I Approve?" — Permission Decision Log
+
+Claude Code prompts for permissions and people click through them fast. kno-trace surfaces a clean, filterable log of every mutation the user approved: "You approved Write to `auth/middleware.go` at 14:32."
+
+**Why #3:** Answers the question "wait, did I let it edit that?" after a session. Fully deterministic — if a `tool_result` exists in the JSONL, the `tool_use` was approved and executed. No inference, no heuristic. Implementable as a filter mode on the existing timeline, not a new view.
+
+**Determinism:** Fully deterministic. The JSONL records every tool_use and its tool_result. A tool_result's existence is proof of approval. The pairing logic already exists in `builder.go`'s `pairToolResult()` and `toolCallsByID` map. This feature just surfaces what's already parsed.
+
+**Design:**
+- `a` key in timeline view toggles "approvals" filter mode
+- Filter shows only prompts that contain Write, Edit, Bash, or Agent tool calls (the mutation types that require approval)
+- Within each prompt, the detail pane highlights only the approved mutations — Reads and Greps are hidden
+- Stats bar shows approval count: `12 writes, 3 edits, 8 bash approved`
+- The filter is a lens on existing data, not a separate data structure
+
+**Implementation plan:**
+
+**`internal/ui/timeline.go`** — add approval filter mode:
+```go
+type filterMode int
+const (
+    filterNone      filterMode = iota
+    filterSearch               // existing `/` search
+    filterApprovals            // new `a` toggle
+)
+
+// In Update(), handle 'a' key:
+case "a":
+    if t.filterMode == filterApprovals {
+        t.filterMode = filterNone
+        t.restoreFullList()
+    } else {
+        t.filterMode = filterApprovals
+        t.filteredIdxs = t.computeApprovalIdxs()
+        t.applyFilter()
+    }
+```
+
+**`internal/ui/timeline.go`** — compute approval indices:
+```go
+// computeApprovalIdxs returns prompt indices that contain mutation tool calls.
+func (t *timelineModel) computeApprovalIdxs() []int {
+    var idxs []int
+    for i, p := range t.session.Prompts {
+        for _, tc := range p.ToolCalls {
+            if tc.Type == model.ToolWrite || tc.Type == model.ToolEdit ||
+               tc.Type == model.ToolBash || tc.Type == model.ToolAgent {
+                idxs = append(idxs, i)
+                break
+            }
+        }
+    }
+    return idxs
+}
+```
+
+**`internal/ui/detail.go`** — approval-focused detail rendering:
+```go
+// When filterMode == filterApprovals, the detail pane renders tool calls
+// with an approval-focused layout:
+//
+//   14:32:05  ✓ Write  internal/parser/builder.go
+//   14:32:08  ✓ Edit   internal/model/types.go (old_str: 12 chars → new_str: 45 chars)
+//   14:32:15  ✓ Bash   go test ./... (exit 0)
+//   14:33:01  ✓ Agent  subagent-1 "Explore codebase for..."
+//
+// Read/Grep/Glob calls are hidden. Each line shows timestamp, op type, path.
+// This is a rendering mode, not new data — ToolCall already has Type, Path,
+// Timestamp from the parser.
+```
+
+**`internal/ui/promptlist.go`** — approval badge:
+```go
+// When approval filter is active, show mutation count per prompt:
+// #7 [14:32-14:35]  3W 1E 2B
+// The W/E/B counts already exist as badge logic — reuse formatBadges()
+```
+
+**What hooks into what (existing infrastructure):**
+- `builder.go` `pairToolResult()` already pairs tool_use → tool_result and populates `ToolCall` fields — approvals are implicit in this data
+- `timeline.go` already has filter infrastructure: `filtering bool`, `filter string`, `filteredIdxs []int`, `restoreFullList()` — the approval filter reuses this exact pattern
+- `detail.go` already renders tool calls with type, path, and timestamp — the approval view is a subset rendering
+- `promptlist.go` already renders W/R/E/B badges — reuse for the approval count display
+- The `a` keybinding is currently unused in the timeline view
+
+**Effort estimate:** ~150 lines new code across 3 existing files. No new packages. No new dependencies. No model changes. Pure UI filtering on existing parsed data.
+
+---
+
+### Session Handoff Summary (`--handoff`)
+
+People lose 4-hour sessions and can't recover context. Context loss between sessions is a top complaint. `kno-trace --handoff <session>` generates a structured summary designed to be pasted into a *new* Claude Code session: files modified, key decisions, where it left off.
+
+**Why P1:** This is not a log viewer — it's a **context restoration artifact** for developers. Existing tools show you what happened; this gives you something actionable to carry forward. The distinction is output format: optimized for LLM consumption, not human browsing. Every developer who uses Claude Code across multiple sessions hits this pain point.
+
+**Design:**
+- Output to stdout (stays read-only)
+- Format: Markdown summary optimized for pasting into a new Claude Code session
+- Includes: files modified (with op counts), agents spawned and their outcomes, final prompt's context%, branch at end of session
+- Deterministic: every field is an exact value from the JSONL. No summarization, no content analysis, no "key decisions" — just structured facts. The LLM receiving the handoff does the synthesis.
+
+**Evidence of demand:**
+- [DEV: "Claude Code Lost My 4-Hour Session. Here's the $0 Fix"](https://dev.to/gonewx/claude-code-lost-my-4-hour-session-heres-the-0-fix-that-actually-works-24h6)
+- [Towards AI: "The Forgetting Problem — Engineering Persistent Intelligence in Claude Code"](https://pub.towardsai.net/the-forgetting-problem-engineering-persistent-intelligence-in-claude-code-bd2e4c59711a)
+
+---
+
+### Token Burn Rate / Velocity
+
+Show **burn rate** — tokens/minute over the session, spiking when agents are running, flatlining when stuck. A sudden spike means agents just spawned. A sustained plateau means the agent is churning.
+
+**Why P1:** This is the "control room" metaphor fully realized — like watching CPU utilization, not just total CPU-seconds. Rate of change is more informative than cumulative totals for live monitoring. Natural companion to loop detection — high burn rate + repetition = almost certainly stuck. Fully deterministic: exact token counts divided by exact timestamp intervals.
+
+**Implementation notes:**
+- Derive from `input_tokens` + `output_tokens` on assistant messages, bucketed by time
+- Display as sparkline in stats bar or as overlay on context pressure sparkline (M8)
+- Per-agent burn rate in swimlane gives immediate signal: "this agent is burning 10x the tokens of the others"
+
+---
+
+## Priority 2 — Clear demand, distinct kno-trace angle, moderate effort or mild determinism caveats
+
+Real pain points where kno-trace's architecture gives it an advantage. May involve external data, editorial choices, or pattern matching that introduces some fragility.
+
+### Prompt-Level Git Commit Tracking
+
+Show which git commits were created during each prompt by detecting `git commit` in Bash tool calls and extracting commit hashes from the output. Bridges the gap between "what Claude did" and "what ended up in version control."
+
+**Why useful:** No tool connects Claude Code's prompt-level activity to the git history. Developers currently have to cross-reference `git log` timestamps with their memory of which prompt did what. This makes the connection explicit: "Prompt #7 created commits `a3f2b1c` and `e8d4f6a`."
+
+**Determinism caveat:** Pattern-matching Bash output for `git commit` is fragile. Commits via aliases (`gc`), scripts, MCP tools, or non-standard wrappers won't be detected. The feature only captures what it can see — but it can't declare "no commits happened" with certainty, only "these commits were observed." Must be framed as "observed commits" not "all commits."
+
+**Design:**
+- Parse Bash tool call commands for `git commit` patterns
+- Extract commit hash from Bash output (first line of `git commit` output contains the short hash)
+- Display commit badges on prompts in the timeline: `#7 [14:32-14:35] ✦ a3f2b1c`
+- Expanded view shows full commit message
+- No heuristics — only explicit `git commit` Bash calls with successful output (exit code 0)
+
+**Implementation notes:**
+- Bash output is already captured (truncated to 500 chars, but commit hash is in the first line)
+- Could miss commits made via MCP tools or non-standard git wrappers — document this limitation
+- No `git log` calls from kno-trace itself — purely derived from JSONL data
+
+---
+
+### Cross-Session File History
+
+Answer "what happened to this file across the last N sessions?" by stitching file histories from multiple sessions for the same project.
+
+**Why useful:** Developers doing multi-session refactors currently have no way to see the full arc of changes to a file. The heatmap (M6) answers this within a single session; cross-session extends the lens. This is the natural evolution of UC2.
+
+**Design:**
+- Project-grouped session list (session picker already groups by project)
+- File history view gains a "cross-session" toggle: shows file operations across all sessions for the current project
+- Timeline: `Session A #3: Write → Session A #7: Edit → Session B #2: Edit → Session B #5: Write`
+- Diffs between session-boundary states (file at end of session A vs. start of session B)
+
+**Implementation notes:**
+- Requires parsing multiple session files — lazy loading with metadata scan first
+- Memory bounded: only load FileHistory for the selected file, not full session parse
+- Could be expensive for projects with dozens of sessions — cap at configurable `max_sessions_cross_ref` (default 10)
+
+---
+
+### Cost Tracking
+
+Per-prompt and per-session cost estimation based on configurable model pricing. Token counts (which v1 already shows) are concrete and verifiable; cost is a pure derivation on top.
+
+**Determinism caveat:** Pricing is external, non-deterministic data. It varies by plan (API vs. Max vs. Pro vs. Team), changes over time, has different cache read/write tiers, and kno-trace cannot know the user's plan. Any number shown could be wrong. This directly conflicts with the "no guesses, no approximations" principle — a displayed cost IS an approximation unless the user configures their exact rates.
+
+**Design (if pursued):**
+- Add `model_pricing` config section with per-model input/output/cache rates — NO defaults baked in. User must configure pricing explicitly, or cost is not shown.
+- Alternatively: show only raw token counts (already done in v1) and let external tools do cost calculation. kno-trace's `--dump` or `--manifest` output provides the data; the user pipes it through their own pricing calculator.
+- This "provide data, not interpretation" approach is more aligned with kno-trace's principles
+
+**Evidence of demand:**
+- [ksred: "I Built a Cost Tracker — Was Max Worth It?"](https://www.ksred.com/i-built-a-cost-tracker-for-claude-code-to-see-if-my-subscription-was-worth-it/)
+- claudetop (popular tool) exists primarily for cost visibility
+- Every "is Claude Code worth it?" thread on Reddit/HN asks about per-session costs
+
+---
 
 ### Compliance Zones — Real-Time Sensitive File Awareness
 
@@ -99,13 +478,11 @@ zones:
 - Shell commands or scripts that receive file paths on stdin and return labels on stdout
 - No SDK, no API surface — just stdin/stdout convention
 - Teams can plug in internal classification tools, policy engines, or custom logic
-- Example: pipe paths through an internal tool that checks a service registry for data classification
 
 **Implementation notes:**
 - Zone matching is glob-based (`filepath.Match` or `doublestar` library for `**` support)
 - Zone badges are a new field on `ToolCall` in the model — `Zones []string`
 - Matching runs at parse time when file paths are extracted from tool calls
-- No heuristics — pure path matching against user-defined patterns
 - Cross-cutting: touches parser, timeline, heatmap, and ticker — better as a focused post-v1 addition than scattered across milestones
 
 ---
@@ -113,8 +490,6 @@ zones:
 ### Session Change Manifest (`--manifest`)
 
 On-demand structured summary of everything that happened in a session: every file touched, every tool used, every agent spawned, with compliance zone annotations. This is the **audit artifact** that SOC2/PCI/HIPAA auditors want.
-
-Turns kno-trace from a developer convenience into something a compliance officer cares about. The manifest is the answer to "what did the AI do to our codebase?" in a format that can be attached to a change request, audit log, or approval workflow.
 
 **Why unique:** Existing log viewers show session content for humans to read. Nobody produces a structured, machine-readable audit artifact. This is the bridge to enterprise compliance tooling.
 
@@ -133,74 +508,15 @@ Turns kno-trace from a developer convenience into something a compliance officer
 
 ---
 
-## Priority 2 — Clear demand, unique kno-trace angle
+## Priority 3 — Useful, low effort, narrower audience
 
-Real pain points where some competition exists, but kno-trace's architecture gives it a distinct advantage.
-
-### Session Handoff Summary (`--handoff`)
-
-People lose 4-hour sessions and can't recover context. Context loss between sessions is a top complaint. `kno-trace --handoff <session>` generates a structured summary designed to be pasted into a *new* Claude Code session: files modified, key decisions, where it left off.
-
-**Why unique:** This is not a log viewer — it's a **context restoration artifact** for developers. Existing tools show you what happened; this gives you something actionable to carry forward. The distinction is output format: optimized for LLM consumption, not human browsing.
-
-**Design:**
-- Output to stdout (stays read-only)
-- Format: Markdown summary optimized for pasting into a new Claude Code session
-- Includes: files modified with brief description of changes, agents spawned and their outcomes, final state summary
-- Not a full transcript — a curated, compressed handoff
-
-**Evidence of demand:**
-- [DEV: "Claude Code Lost My 4-Hour Session. Here's the $0 Fix"](https://dev.to/gonewx/claude-code-lost-my-4-hour-session-heres-the-0-fix-that-actually-works-24h6)
-- [Towards AI: "The Forgetting Problem — Engineering Persistent Intelligence in Claude Code"](https://pub.towardsai.net/the-forgetting-problem-engineering-persistent-intelligence-in-claude-code-bd2e4c59711a)
-
----
-
-### Token Burn Rate / Velocity
-
-claudetop shows token counts as a point-in-time number. kno-trace could show **burn rate** — tokens/minute over the session, spiking when agents are running, flatlining when stuck. A sudden spike means agents just spawned. A sustained plateau means the agent is churning.
-
-**Why unique:** This is the "control room" metaphor realized — like watching CPU utilization, not just total CPU-seconds. Rate of change is more informative than cumulative totals for live monitoring.
-
-**Implementation notes:**
-- Derive from `input_tokens` + `output_tokens` on assistant messages, bucketed by time
-- Display as sparkline in stats bar or as overlay on context pressure sparkline (M8)
-- Natural companion to loop detection — high burn rate + repetition = almost certainly stuck
-
----
-
-### Compaction Diff — What Got Forgotten
-
-When `/compact` runs, context is summarized and detail is lost. The JSONL has `compact_boundary` with `preTokens`. kno-trace could show **what prompts existed before vs. after the compaction boundary** — helping the user understand what the agent "forgot."
-
-**Why unique:** Nobody visualizes this. Users know compaction happened but have no way to understand its impact without reading raw JSONL. This makes the lossy compression visible.
-
-**Implementation notes:**
-- Mark prompts as pre/post compaction in the timeline
-- Show a visual divider at compaction points
-- Optional: dim or collapse pre-compaction prompts to indicate they're "outside active memory"
-
----
-
-### "What Did I Approve?" — Permission Decision Log
-
-Claude Code prompts for permissions and people click through them fast. kno-trace could surface a clean log: "You approved Write to `auth/middleware.go` at 14:32" — reconstructed from tool_use/tool_result pairs.
-
-**Why unique:** Useful for post-session review ("wait, did I let it edit that?"). Especially powerful paired with compliance zones — "you approved 3 writes to PCI-scoped files."
-
-**Implementation notes:**
-- Reconstruct from tool_use (request) → tool_result (approved, since result exists) pairs
-- Filter view: show only write/edit/bash approvals (reads are less interesting)
-- Could be a filter mode in the timeline rather than a separate view
-
----
-
-## Priority 3 — Useful, low effort, less unique
-
-Good ideas that round out the product. Lower priority because they're either partially addressed by other tools or have narrower audiences.
+Good ideas that round out the product. Lower priority because they're either partially addressed by other tools or serve fewer users daily.
 
 ### Session Health Score
 
-A single glanceable composite indicator: time since last tool call (stalled?), repetition rate (spinning?), context% (pressure?), agent count (overwhelmed?). Not a heuristic classification — a composite of observable metrics. Green/yellow/red in the stats bar.
+A single glanceable composite indicator: time since last tool call (stalled?), repetition rate (spinning?), context% (pressure?), agent count (overwhelmed?). Green/yellow/red in the stats bar.
+
+**Determinism caveat:** The individual metrics are exact, but combining them into a single score requires weighting — which is inherently opinionated. What ratio of context%/idle/repetition = "yellow"? Any composite threshold is a judgment call, not a derivation. Could be mitigated by making the score purely config-driven (user defines their own thresholds) and showing component metrics alongside the composite.
 
 **Implementation notes:**
 - Pure derivation from metrics already computed for other features (loop detection, context%, quiet state)
@@ -222,17 +538,20 @@ Tag each prompt with its read/write ratio based on tool calls. A prompt that's 9
 
 ---
 
-### Cost Tracking
+### Session Annotations / Bookmarks
 
-Per-prompt and per-session cost estimation based on configurable model pricing. Token counts (which v1 already shows) are concrete and verifiable; cost is a pure derivation on top.
+Allow users to bookmark specific prompts or add notes during a session for later reference.
 
-**Why deferred:** Pricing data is complex — varies by model, changes over time, includes cache read/write tiers. A bug in cost calculation could be misleading. Better served by dedicated tools like claudetop. If added, token data is already in the model.
+**Design — resolving the read-only tension:**
+- Annotations stored in kno-trace's own config directory: `~/.config/kno-trace/annotations/<session-id>.yaml`
+- This respects the inviolable rule ("never write to the user's filesystem outside kno-trace's own config directory") while adding persistence
+- `b` to bookmark current prompt, `B` to list bookmarks, named bookmarks via text input
+- Bookmarks visible as badges in the timeline: `★ "started refactor"`
+- Survives kno-trace restart (unlike in-memory marks from M7's `m` workflow)
 
 **Implementation notes:**
-- Add `CostUSD float64` to `Prompt` model
-- Add `model_pricing` config section with per-model input/output/cache rates
-- Display in timeline header, stats bar, `--dump` output
-- Aggregate views: cost by model, by agent vs parent, over time
+- Small YAML file per session — bounded by prompt count
+- Distinct from M7's `m` marks which are ephemeral and purpose-built for diff selection
 
 ---
 
@@ -248,7 +567,30 @@ Preview full file content at any point in the session (not just diffs). Useful f
 
 Export a session summary, diff, or timeline as HTML, Markdown, or image for sharing.
 
+**Design directions:**
+- `--export-html <session>` → self-contained HTML file with embedded CSS, viewable in any browser
+- `--export-md <session>` → Markdown summary for pasting into PRs, docs, or Slack
+- Useful for code review ("here's what Claude did"), incident postmortems, or team knowledge sharing
+- Shares infrastructure with `--handoff` (P1) and `--manifest` (P2) — different output formats of the same parsed data
+
 **Why deferred:** Pure feature scope. No architectural blocker.
+
+---
+
+### Session Analytics — Patterns Across Sessions
+
+Factual aggregates across sessions for a project: average session duration, most-edited files, typical context% at compaction, token usage trends. Not heuristic classification — observable metrics over time.
+
+**Design:**
+- `kno-trace --stats [project-path]` — CLI output, no TUI required
+- Metrics: session count, avg/median duration, total tokens, most-modified files (top 10), compaction frequency, agent spawn rate
+- Data derived from lightweight meta-scan of session files (same as session picker), plus selective full parse for token/file data
+- Helps developers tune their workflow: "my sessions average 45 minutes and hit compaction at prompt 12"
+
+**Implementation notes:**
+- Reuses `SessionMeta` scanning from discovery package
+- Full parse only for token/file metrics — expensive, so optional (`--stats --full`)
+- No persistence — computed on demand each time
 
 ---
 
@@ -267,12 +609,6 @@ A grid visualization: columns = prompts, rows = files, cells colored by operatio
 - Cells: orange=Write, blue=Read, yellow=Edit, dim=Bash, empty=none
 - `enter` on a cell navigates to that prompt in timeline view
 - Lazy rendering — only render visible cells
-
----
-
-### Subagent File Reading + Live Tailing → M5 (promoted)
-
-**Promoted to v1.** M5 now reads subagent JSONL files for full tool call history AND tails them in real-time during live sessions. Without this, the swimlane would show empty lanes for agents that don't emit progress lines — which undermines the flagship view. M6's replay engine includes agent tool calls in its file history (interleaved by timestamp), so the heatmap and diff view reflect agent modifications too. See M5 and M6 specs for details.
 
 ---
 
@@ -300,14 +636,6 @@ Detect when a subagent was spawned with a similar task description to a previous
 
 ---
 
-### Session Annotations / Bookmarks
-
-Allow users to bookmark specific prompts or add notes to a session for later reference.
-
-**Why deprioritized:** Requires breaking the read-only principle (writing a sidecar file). Could be implemented as a separate annotation file that kno-trace reads but doesn't require. Tension with core design.
-
----
-
 ### `--update-pricing` / Remote Pricing Fetch
 
 Fetch current Anthropic pricing and update local config automatically.
@@ -320,7 +648,7 @@ Fetch current Anthropic pricing and update local config automatically.
 
 Structured JSON output of a parsed session to stdout.
 
-**Why deprioritized:** Subsumed by `--manifest` (Priority 1). If `--manifest` ships first, this becomes redundant. If `--manifest` is scoped differently, this remains a simpler alternative for scripting.
+**Why deprioritized:** Subsumed by `--manifest` (Priority 2). If `--manifest` ships first, this becomes redundant. If `--manifest` is scoped differently, this remains a simpler alternative for scripting.
 
 **Implementation notes:**
 - Emits full `Session` struct as JSON
