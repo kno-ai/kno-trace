@@ -130,3 +130,12 @@ Hard-won knowledge from building each milestone. Read before starting a new mile
 - **`RebuildActivePrompt` receives only new events, not the full accumulated slice.** After `MsgReplayDone`, `a.events` is freed. Each `MsgNewEvents` batch is passed directly with `startIdx=0`. This prevents unbounded memory growth during long live sessions.
 - **Zero-value Ticker is safe.** `Push()` and `AgentColor()` defensively initialize nil maps. This handles the edge case where a session starts with 0 prompts and the ticker wasn't initialized via `NewTicker()`.
 - **Negative terminal dimensions.** `setSize()` clamps `detailWidth` and `contentHeight` to `≥ 1` to prevent layout corruption in very small terminals.
+
+### M5: Agent Tree & Swimlane (Layer 1)
+
+- **Subagent file naming verified against real data.** Format is `agent-a<hexId>.jsonl` where hexId is a 16-char lowercase hex string. Path: `<sessionDir>/<sessionId>/subagents/agent-a<agentId>.jsonl`. The `agentId` from `toolUseResult` maps directly to the filename suffix. Each agent also has an `agent-a<agentId>.meta.json` with type/description.
+- **Subagent JSONL files are self-contained sessions.** All lines have `isSidechain: true` and `agentId` fields. They share the parent's `sessionId`. The same `parser.ParseFile` pipeline works for parsing them — no separate parser needed.
+- **Parallel detection belongs in the agent package, not the parser.** The parser creates `AgentNode` stubs; `agent.EnrichSession()` runs `detectParallelAgents()` after reading subagent files. Parallel = Agent B spawned before Agent A completed (timestamp-based, exact).
+- **File conflict detection requires subagent file data.** `FilesTouched` is populated from actual tool calls in subagent files, not from progress lines. Conflicts are only flagged between parallel agents where at least one performed a write/edit.
+- **`ensurePickerLoaded` was replaced with `refreshPicker`.** The old function skipped rescans when sessions were cached, causing lockouts when files were deleted. Always rescan on `P` key or watcher error.
+- **Watcher must send an error message when file open fails.** `MsgWatcherError` was added — without it, the app gets stuck in "Loading..." forever when a session file is missing.

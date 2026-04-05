@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/kno-ai/kno-trace/internal/agent"
 	"github.com/kno-ai/kno-trace/internal/config"
 	"github.com/kno-ai/kno-trace/internal/discovery"
 	"github.com/kno-ai/kno-trace/internal/model"
@@ -142,6 +143,10 @@ func runDump(path string, cfg *config.Config) error {
 
 	session := parser.BuildSession(events, cfg)
 
+	// Enrich agent nodes from subagent JSONL files.
+	sessionDir := filepath.Dir(path)
+	agent.EnrichSession(session, sessionDir, cfg)
+
 	// Header.
 	projectName := filepath.Base(filepath.Dir(path))
 	if projectName == "/" || projectName == "." {
@@ -205,26 +210,45 @@ func runDump(path string, cfg *config.Config) error {
 		}
 
 		// Agents.
-		for _, agent := range p.Agents {
+		for _, a := range p.Agents {
 			parallel := ""
-			if agent.IsParallel {
+			if a.IsParallel {
 				parallel = "  [parallel]"
 			}
-			agentType := agent.SubagentType
+			agentType := a.SubagentType
 			if agentType == "" {
 				agentType = "agent"
 			}
-			modelShort := shortModelName(agent.ModelName)
+			modelShort := shortModelName(a.ModelName)
 			if modelShort != "" {
 				modelShort = ", " + modelShort
 			}
-			desc := ui.Truncate(agent.TaskDescription, 40)
+			desc := ui.Truncate(a.TaskDescription, 40)
 			fmt.Printf("   ⬡ %s (%s%s) — %q — %d tools, %s tokens — %s%s\n",
-				agent.Label, agentType, modelShort, desc,
-				agent.TotalToolUseCount,
-				ui.FormatTokens(agent.TotalTokens),
-				ui.FormatDuration(time.Duration(agent.TotalDurationMs)*time.Millisecond),
+				a.Label, agentType, modelShort, desc,
+				a.TotalToolUseCount,
+				ui.FormatTokens(a.TotalTokens),
+				ui.FormatDuration(time.Duration(a.TotalDurationMs)*time.Millisecond),
 				parallel)
+
+			// Show agent's tool calls from subagent file (if enriched).
+			for _, tc := range a.ToolCalls {
+				line := formatToolCall(tc)
+				if line != "" {
+					fmt.Printf("      %s\n", line)
+				}
+			}
+			// Show files touched.
+			if len(a.FilesTouched) > 0 {
+				fmt.Printf("      files: %s\n", strings.Join(a.FilesTouched, ", "))
+			}
+		}
+
+		// Unlinked agents.
+		for _, a := range session.UnlinkedAgents {
+			if a.ParentPromptIdx == p.Index {
+				fmt.Printf("   ⚠ %s — agent linkage unresolved\n", a.Label)
+			}
 		}
 
 		// Tool calls.
@@ -238,10 +262,15 @@ func runDump(path string, cfg *config.Config) error {
 			}
 		}
 
-		// Loop warnings.
+		// Warnings.
 		for _, w := range p.Warnings {
-			if w.Type == model.WarnLoopDetected {
+			switch w.Type {
+			case model.WarnLoopDetected:
 				fmt.Printf("   ⟳ LOOP: %s\n", w.Message)
+			case model.WarnAgentConflict:
+				fmt.Printf("   ⚠ CONFLICT: %s\n", w.Message)
+			case model.WarnAgentUnlinked:
+				fmt.Printf("   ⚠ %s\n", w.Message)
 			}
 		}
 

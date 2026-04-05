@@ -2,6 +2,7 @@ package parser
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -127,7 +128,7 @@ func BuildSession(events []*RawEvent, cfg *config.Config) *model.Session {
 				if tc.Type == model.ToolAgent {
 					agent := &model.AgentNode{
 						ToolUseID:       tc.ID,
-						Label:           tc.AgentDescription,
+						Label:           fmt.Sprintf("subagent-%d", agentCounter),
 						SubagentType:    tc.SubagentType,
 						TaskDescription: tc.AgentDescription,
 						TaskPrompt:      tc.AgentPrompt,
@@ -209,15 +210,16 @@ func buildToolCall(block ContentBlock, timestamp time.Time, agentCounter *int) *
 	if len(block.ToolInput) > 0 {
 		var input map[string]json.RawMessage
 		if err := json.Unmarshal(block.ToolInput, &input); err == nil {
-			parseToolInput(tc, input, block.ToolName, agentCounter)
+			ParseToolInput(tc, input, agentCounter)
 		}
 	}
 
 	return tc
 }
 
-// parseToolInput extracts tool-specific fields from the input object.
-func parseToolInput(tc *model.ToolCall, input map[string]json.RawMessage, toolName string, agentCounter *int) {
+// ParseToolInput extracts tool-specific fields from the input object.
+// Exported for reuse by the agent tree builder (subagent file parsing).
+func ParseToolInput(tc *model.ToolCall, input map[string]json.RawMessage, agentCounter *int) {
 	switch tc.Type {
 	case model.ToolWrite:
 		if v, ok := input["file_path"]; ok {
@@ -491,7 +493,7 @@ func RebuildActivePrompt(s *model.Session, events []*RawEvent, startIdx int, cfg
 				if tc.Type == model.ToolAgent {
 					agent := &model.AgentNode{
 						ToolUseID:       tc.ID,
-						Label:           tc.AgentDescription,
+						Label:           fmt.Sprintf("subagent-%d", agentCounter),
 						SubagentType:    tc.SubagentType,
 						TaskDescription: tc.AgentDescription,
 						TaskPrompt:      tc.AgentPrompt,

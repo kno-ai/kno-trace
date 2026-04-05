@@ -67,9 +67,14 @@ func isHumanTurnEvent(evt *parser.RawEvent) bool {
 	return evt.Type == "user" && parser.IsHumanTurn(evt)
 }
 
+// MsgWatcherError is sent when the watcher encounters a fatal error
+// (e.g., session file not found). The UI should handle this gracefully.
+type MsgWatcherError struct{ Err error }
+
 func (t *Tailer) run(stop <-chan struct{}) {
 	f, err := os.Open(t.path)
 	if err != nil {
+		t.send(MsgWatcherError{Err: err})
 		return
 	}
 	defer f.Close()

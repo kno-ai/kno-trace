@@ -3,11 +3,13 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/kno-ai/kno-trace/internal/agent"
 	"github.com/kno-ai/kno-trace/internal/config"
 	"github.com/kno-ai/kno-trace/internal/discovery"
 	"github.com/kno-ai/kno-trace/internal/model"
@@ -152,6 +154,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Keep listening for more watcher messages.
 		return a, tea.Batch(cmd, waitForWatcher(msg.ch))
 
+	case msgPickerRefresh:
+		a.refreshPicker()
+		a.statusMsg = ""
+		return a, nil
+
 	case tickMsg:
 		// Re-issue tick only if we're in a live timeline view.
 		if a.view == viewTimeline && a.session != nil && a.session.IsLive {
@@ -266,6 +273,14 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 		a.timeline.isLive = false
 		a.statusMsg = "Session file removed — press P for picker or q to quit"
 		a.cleanup()
+
+	case watcher.MsgWatcherError:
+		// Watcher failed to open the session file (deleted, permissions, etc.).
+		// Return to picker with a fresh session list.
+		a.resetSession()
+		a.refreshPicker()
+		a.view = viewPicker
+		a.statusMsg = "Session unavailable — list refreshed"
 	}
 	return nil
 }
@@ -356,6 +371,12 @@ func (a *App) rebuildSession() {
 		}
 		a.session.FilePath = a.sessionMeta.FilePath
 	}
+
+	// Enrich agent nodes from subagent JSONL files.
+	if a.session.FilePath != "" {
+		sessionDir := filepath.Dir(a.session.FilePath)
+		agent.EnrichSession(a.session, sessionDir, a.cfg)
+	}
 }
 
 func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -393,7 +414,7 @@ func (a App) updateLoading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	case "P", "esc":
 		a.resetSession()
-		a.ensurePickerLoaded()
+		a.refreshPicker()
 		a.view = viewPicker
 		return a, nil
 	}
@@ -414,7 +435,7 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	case "P":
 		a.resetSession()
-		a.ensurePickerLoaded()
+		a.refreshPicker()
 		a.view = viewPicker
 		a.statusMsg = ""
 		return a, nil
@@ -427,7 +448,7 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		a.resetSession()
-		a.ensurePickerLoaded()
+		a.refreshPicker()
 		a.view = viewPicker
 		a.statusMsg = ""
 		return a, nil
@@ -456,27 +477,27 @@ func (a *App) resetSession() {
 	a.agentCounter = 0
 }
 
-// ensurePickerLoaded populates the picker with sessions if it's empty.
-func (a *App) ensurePickerLoaded() {
-	if len(a.picker.sessions) > 0 {
-		return
-	}
+// refreshPicker rescans the filesystem and rebuilds the picker session list.
+// Always rescans — stale session lists cause lockouts when files are deleted.
+func (a *App) refreshPicker() {
 	sessions, _ := discovery.ScanAll()
 	if a.cfg != nil && len(sessions) > a.cfg.MaxPickerSessions {
 		sessions = sessions[:a.cfg.MaxPickerSessions]
 	}
-	if len(sessions) > 0 {
-		a.allSessions = sessions
-		a.picker = newPicker(sessions)
-		a.picker.width = a.width
-		a.picker.height = a.height
-	}
+	a.allSessions = sessions
+	a.picker = newPicker(sessions)
+	a.picker.width = a.width
+	a.picker.height = a.height
 }
 
 func (a App) View() string {
 	switch a.view {
 	case viewPicker:
-		return a.picker.View()
+		v := a.picker.View()
+		if a.statusMsg != "" {
+			v += "\n" + MutedStyle.Render("  "+a.statusMsg)
+		}
+		return v
 	case viewLoading:
 		return a.viewLoading()
 	case viewTimeline:

@@ -106,6 +106,11 @@ The swimlane is kno-trace's flagship view for agent-heavy workflows. It must wor
   - "No agents in this prompt" message when applicable
   - `s` key activates swimlane view
 
+### Build order clarifications
+
+- **Layer 1 (tree builder) focuses on data correctness.** The `--dump` output is the primary verification mechanism. Agent detail expand/collapse with breadcrumb navigation in the detail pane is deferred to layer 3, not layer 1.
+- **Layer 3 (swimlane) includes timeline detail pane enhancements.** The expand/collapse agent view, breadcrumb navigation (`#4 > subagent-2 > subagent-2a`), and full agent detail rendering in the detail pane are built alongside the swimlane — both are "agent visualization" work and share styling/interaction patterns.
+
 ### Known limitations (v1)
 
 - **Nested agent tailing adds complexity.** If an agent spawns its own sub-agents, those sub-agents have their own JSONL files. v1 supports nested agents in the tree structure and reads their files on completion, but does not tail nested subagent files in real-time. The parent agent's file IS tailed, so the nested Agent tool_use/tool_result is visible — just not the nested agent's individual tool calls until it completes.
@@ -160,3 +165,4 @@ The swimlane is kno-trace's flagship view for agent-heavy workflows. It must wor
 - Test against `internal/testdata/parallel_agents.jsonl` and associated subagent files from M0
 - The parallel detection algorithm must use the exact timestamps from the log
 - The subagent file tailer reuses the same streaming/parsing logic as the parent session watcher — do not build a separate parser
+- **Verified subagent file naming (2026-04-05):** Files are `agent-a<hexId>.jsonl` where hexId is a 16-char lowercase hex string. Path: `<sessionDir>/<sessionId>/subagents/agent-a<agentId>.jsonl`. Each agent also has an `agent-a<agentId>.meta.json` with `{"agentType":"...","description":"..."}`. The `agentId` in `toolUseResult` maps directly to the filename suffix.

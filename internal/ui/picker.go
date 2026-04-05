@@ -132,6 +132,8 @@ func (m pickerModel) updateNormal(msg tea.KeyMsg) (pickerModel, tea.Cmd) {
 	case "/":
 		m.filtering = true
 		m.filter = ""
+	case "R":
+		return m, func() tea.Msg { return msgPickerRefresh{} }
 	case "esc":
 		if m.filter != "" {
 			m.resetFilter()
@@ -139,6 +141,9 @@ func (m pickerModel) updateNormal(msg tea.KeyMsg) (pickerModel, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// msgPickerRefresh signals that the picker should rescan sessions.
+type msgPickerRefresh struct{}
 
 func (m pickerModel) View() string {
 	if len(m.sessions) == 0 {
@@ -268,6 +273,7 @@ func (m pickerModel) statusBar() string {
 		{"enter", "open"},
 		{"j/k", "navigate"},
 		{"/", "filter"},
+		{"R", "refresh"},
 		{"q", "quit"},
 	}
 

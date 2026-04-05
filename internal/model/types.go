@@ -13,10 +13,11 @@ type Session struct {
 	ModelName   string    // primary model, from first assistant message; individual prompts may differ
 	StartTime   time.Time
 	EndTime     time.Time    // zero if session still live (no final timestamp seen)
-	Prompts     []*Prompt
-	IsLive      bool         // set by watcher: true only while actively receiving new lines
-	CompactAt   []int        // prompt indices where /compact occurred (may be multiple)
-	Interrupted bool         // true if session ended without a final assistant turn
+	Prompts        []*Prompt
+	UnlinkedAgents []*AgentNode // agents whose session ID linkage could not be resolved
+	IsLive         bool         // set by watcher: true only while actively receiving new lines
+	CompactAt      []int        // prompt indices where /compact occurred (may be multiple)
+	Interrupted    bool         // true if session ended without a final assistant turn
 }
 
 // Prompt represents one human turn and everything Claude did in response.
