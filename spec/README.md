@@ -529,9 +529,11 @@ internal/
     types.go             — ALL domain types — single source of truth
 
   discovery/             — (M1)
-    hash.go              — project path encoding (slash-to-dash)
+    pathenc.go           — project path encoding (slash-to-dash)
     scan.go              — scans projectsDir, builds []SessionMeta
-    meta.go              — populates SessionMeta from first/last JSONL lines only
+    meta.go              — populates SessionMeta from first/last JSONL lines;
+                           scans for timestamp and cwd fields (first line may be
+                           file-history-snapshot or other non-message type)
 
   parser/                — (M2)
     jsonl.go             — streams JSONL lines, emits RawEvent per line (never loads full file)

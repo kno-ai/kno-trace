@@ -87,3 +87,18 @@ Specific defensive practices:
 - **No dead code.** Don't leave commented-out code, unused imports, or placeholder functions. If something isn't needed yet, don't write it.
 - **Errors are information.** Malformed JSONL lines, missing files, unresolvable agent links — log to stderr and continue. Never crash on bad input. Never silently swallow errors that would help the user understand what happened.
 - **Reproducible builds.** `go build` with the same source and Go version must produce functionally identical binaries. No build-time randomness, no timestamp embedding beyond what goreleaser provides for versioning.
+
+---
+
+## Implementation Learnings
+
+Hard-won knowledge from building each milestone. Read before starting a new milestone — these reflect real behavior observed in production JSONL files, not spec assumptions.
+
+### M1: Session Picker
+
+- **First JSONL line is not always a user message.** Real sessions often start with `file-history-snapshot` lines that lack `timestamp` and `cwd` fields. The meta parser must scan forward through the first ~10 lines to find these fields. Don't assume line 1 has what you need.
+- **Not all line types carry `timestamp`.** `file-history-snapshot` and some `queue-operation` lines omit it. Any code extracting timestamps must check for presence, not assume.
+- **`cwd` field is the source of truth for project path.** The encoded directory name under `~/.claude/projects/` is ambiguous to reverse (dashes in real directory names). Extract the real project path from the `cwd` field on user/assistant message lines instead.
+- **JSONL lines can be large.** Assistant messages with streaming snapshots include full content blocks. The scanner buffer needs to be at least 1MB. The default `bufio.Scanner` buffer (64KB) is too small for some real lines.
+- **`go test` changes working directory** to the package directory. `os.Getwd()` in tests returns `internal/discovery/`, not the project root. `FindCWDSessions()` returning 0 in tests is correct behavior, not a bug.
+- **Global keybindings vs view-local input.** Any key handled globally (like `q` for quit) will intercept that key during text input (like fuzzy filter). Keys that conflict with text input must be handled per-view, not globally. Only `ctrl+c` is safe as a true global.

@@ -10,7 +10,7 @@ vendor/
 
 # Build output
 dist/
-kno-trace
+/kno-trace
 
 # IDE
 .idea/
