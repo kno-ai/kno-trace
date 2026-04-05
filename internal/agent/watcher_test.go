@@ -50,7 +50,7 @@ func TestAgentWatcher_FileAlreadyExists(t *testing.T) {
 	os.MkdirAll(subDir, 0755)
 
 	// Pre-create the subagent file with a tool_use.
-	agentFile := filepath.Join(subDir, "agent-atest123.jsonl")
+	agentFile := filepath.Join(subDir, "agent-test123.jsonl")
 	content := `{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"tc-1","name":"Read","input":{"file_path":"foo.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":20}},"timestamp":"2026-01-01T00:00:01Z","uuid":"u1","sessionId":"test-session"}` + "\n"
 	os.WriteFile(agentFile, []byte(content), 0644)
 
@@ -108,7 +108,7 @@ func TestAgentWatcher_FileAppearsLater(t *testing.T) {
 
 	// Wait a moment then create the file.
 	time.Sleep(50 * time.Millisecond)
-	agentFile := filepath.Join(subDir, "agent-alate456.jsonl")
+	agentFile := filepath.Join(subDir, "agent-late456.jsonl")
 	content := `{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"tc-2","name":"Glob","input":{"pattern":"**/*.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}},"timestamp":"2026-01-01T00:00:02Z","uuid":"u2","sessionId":"test-session"}` + "\n"
 	os.WriteFile(agentFile, []byte(content), 0644)
 
@@ -132,7 +132,7 @@ func TestAgentWatcher_LiveAppend(t *testing.T) {
 	os.MkdirAll(subDir, 0755)
 
 	// Create file with initial content.
-	agentFile := filepath.Join(subDir, "agent-aappend789.jsonl")
+	agentFile := filepath.Join(subDir, "agent-append789.jsonl")
 	line1 := `{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"tc-a","name":"Read","input":{"file_path":"a.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}},"timestamp":"2026-01-01T00:00:01Z","uuid":"u1","sessionId":"test-session"}` + "\n"
 	os.WriteFile(agentFile, []byte(line1), 0644)
 
@@ -254,7 +254,7 @@ func TestAgentWatcher_FinalReadOnStop(t *testing.T) {
 	subDir := filepath.Join(tmpDir, sessionID, "subagents")
 	os.MkdirAll(subDir, 0755)
 
-	agentFile := filepath.Join(subDir, "agent-afinalread.jsonl")
+	agentFile := filepath.Join(subDir, "agent-finalread.jsonl")
 	line1 := `{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"tc-first","name":"Read","input":{"file_path":"first.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}},"timestamp":"2026-01-01T00:00:01Z","uuid":"u1","sessionId":"test-session"}` + "\n"
 	os.WriteFile(agentFile, []byte(line1), 0644)
 
@@ -324,7 +324,7 @@ func TestAgentWatcher_MalformedLines(t *testing.T) {
 	os.MkdirAll(subDir, 0755)
 
 	// File with a mix of valid and malformed lines.
-	agentFile := filepath.Join(subDir, "agent-amalformed.jsonl")
+	agentFile := filepath.Join(subDir, "agent-malformed.jsonl")
 	content := "not json at all\n" +
 		`{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"tc-ok","name":"Read","input":{"file_path":"ok.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}},"timestamp":"2026-01-01T00:00:01Z","uuid":"u1","sessionId":"test-session"}` + "\n" +
 		"{truncated json\n"
@@ -375,7 +375,7 @@ func TestAgentWatcher_SubagentsDirCreatedLater(t *testing.T) {
 	os.MkdirAll(subDir, 0755)
 
 	time.Sleep(50 * time.Millisecond)
-	agentFile := filepath.Join(subDir, "agent-adelayed.jsonl")
+	agentFile := filepath.Join(subDir, "agent-delayed.jsonl")
 	content := `{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"tc-delayed","name":"Read","input":{"file_path":"delayed.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}},"timestamp":"2026-01-01T00:00:01Z","uuid":"u1","sessionId":"test-session"}` + "\n"
 	os.WriteFile(agentFile, []byte(content), 0644)
 
@@ -407,7 +407,7 @@ func TestAgentWatcher_MultipleConcurrentAgents(t *testing.T) {
 
 	// Create two agent files.
 	for _, id := range []string{"multi1", "multi2"} {
-		agentFile := filepath.Join(subDir, "agent-a"+id+".jsonl")
+		agentFile := filepath.Join(subDir, "agent-"+id+".jsonl")
 		content := `{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"tool_use","id":"tc-` + id + `","name":"Read","input":{"file_path":"` + id + `.go"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}},"timestamp":"2026-01-01T00:00:01Z","uuid":"u-` + id + `","sessionId":"test-session"}` + "\n"
 		os.WriteFile(agentFile, []byte(content), 0644)
 	}

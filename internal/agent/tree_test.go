@@ -193,7 +193,7 @@ func TestEnrichSession_MissingSubagentFile(t *testing.T) {
 
 func TestSubagentFilePath(t *testing.T) {
 	got := SubagentFilePath("/home/user/.claude/projects/myproj", "abc-123", "deadbeef01234567")
-	want := filepath.Join("/home/user/.claude/projects/myproj", "abc-123", "subagents", "agent-adeadbeef01234567.jsonl")
+	want := filepath.Join("/home/user/.claude/projects/myproj", "abc-123", "subagents", "agent-deadbeef01234567.jsonl")
 	if got != want {
 		t.Errorf("SubagentFilePath: got %s, want %s", got, want)
 	}
@@ -215,9 +215,9 @@ func TestSubagentFileExists(t *testing.T) {
 
 	// Verify the fixture files actually exist.
 	for _, name := range []string{
-		"session-001/subagents/agent-aagent-001.jsonl",
-		"session-001/subagents/agent-aagent-002.jsonl",
-		"session-003/subagents/agent-aagent-001.jsonl",
+		"session-001/subagents/agent-agent-001.jsonl",
+		"session-001/subagents/agent-agent-002.jsonl",
+		"session-003/subagents/agent-agent-001.jsonl",
 	} {
 		path := filepath.Join(dir, name)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -491,7 +491,7 @@ func TestDetectFileConflicts_SpecificPath(t *testing.T) {
 
 func TestEnrichFromFile_Directly(t *testing.T) {
 	cfg := config.Load()
-	path := filepath.Join(testdataDir(t), "session-003", "subagents", "agent-aagent-001.jsonl")
+	path := filepath.Join(testdataDir(t), "session-003", "subagents", "agent-agent-001.jsonl")
 
 	ag := &model.AgentNode{ID: "agent-001"}
 	if err := EnrichFromFile(ag, path, cfg); err != nil {

@@ -239,12 +239,12 @@ func (w *AgentWatcher) runDirWatcher() {
 			}
 
 			filename := filepath.Base(event.Name)
-			if !strings.HasSuffix(filename, ".jsonl") || !strings.HasPrefix(filename, "agent-a") {
+			if !strings.HasSuffix(filename, ".jsonl") || !strings.HasPrefix(filename, "agent-") {
 				continue
 			}
 
-			// Extract agentID from filename: agent-a<agentID>.jsonl
-			agentID := strings.TrimPrefix(filename, "agent-a")
+			// Extract agentID from filename: agent-<agentID>.jsonl
+			agentID := strings.TrimPrefix(filename, "agent-")
 			agentID = strings.TrimSuffix(agentID, ".jsonl")
 
 			w.mu.Lock()

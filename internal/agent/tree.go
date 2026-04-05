@@ -91,8 +91,11 @@ func enrichAgents(s *model.Session, agents []*model.AgentNode, sessionDir, sessi
 }
 
 // SubagentFilePath returns the expected path of a subagent JSONL file.
+// Claude Code names subagent files as agent-<agentId>.jsonl where the agentId
+// is a hex string (the leading 'a' in filenames like agent-ab502... is part of
+// the hex ID, not a separate prefix).
 func SubagentFilePath(sessionDir, sessionID, agentID string) string {
-	return filepath.Join(sessionDir, sessionID, "subagents", "agent-a"+agentID+".jsonl")
+	return filepath.Join(sessionDir, sessionID, "subagents", "agent-"+agentID+".jsonl")
 }
 
 // SubagentsDir returns the directory where subagent files live for a session.

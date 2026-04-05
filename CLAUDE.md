@@ -133,7 +133,7 @@ Hard-won knowledge from building each milestone. Read before starting a new mile
 
 ### M5: Agent Tree & Swimlane (Layer 1)
 
-- **Subagent file naming verified against real data.** Format is `agent-a<hexId>.jsonl` where hexId is a 16-char lowercase hex string. Path: `<sessionDir>/<sessionId>/subagents/agent-a<agentId>.jsonl`. The `agentId` from `toolUseResult` maps directly to the filename suffix. Each agent also has an `agent-a<agentId>.meta.json` with type/description.
+- **Subagent file naming corrected against real data.** Format is `agent-<agentId>.jsonl` (NOT `agent-a<agentId>` — the leading `a` in hex IDs like `ab502...` is part of the ID itself, not a separate prefix). Path: `<sessionDir>/<sessionId>/subagents/agent-<agentId>.jsonl`. Each agent also has an `agent-<agentId>.meta.json` with type/description.
 - **Subagent JSONL files are self-contained sessions.** All lines have `isSidechain: true` and `agentId` fields. They share the parent's `sessionId`. The same `parser.ParseFile` pipeline works for parsing them — no separate parser needed.
 - **Parallel detection belongs in the agent package, not the parser.** The parser creates `AgentNode` stubs; `agent.EnrichSession()` runs `detectParallelAgents()` after reading subagent files. Parallel = Agent B spawned before Agent A completed (timestamp-based, exact).
 - **File conflict detection requires subagent file data.** `FilesTouched` is populated from actual tool calls in subagent files, not from progress lines. Conflicts are only flagged between parallel agents where at least one performed a write/edit.

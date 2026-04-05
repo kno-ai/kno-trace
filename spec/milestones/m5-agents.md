@@ -165,4 +165,4 @@ The swimlane is kno-trace's flagship view for agent-heavy workflows. It must wor
 - Test against `internal/testdata/parallel_agents.jsonl` and associated subagent files from M0
 - The parallel detection algorithm must use the exact timestamps from the log
 - The subagent file tailer reuses the same streaming/parsing logic as the parent session watcher — do not build a separate parser
-- **Verified subagent file naming (2026-04-05):** Files are `agent-a<hexId>.jsonl` where hexId is a 16-char lowercase hex string. Path: `<sessionDir>/<sessionId>/subagents/agent-a<agentId>.jsonl`. Each agent also has an `agent-a<agentId>.meta.json` with `{"agentType":"...","description":"..."}`. The `agentId` in `toolUseResult` maps directly to the filename suffix.
+- **Corrected subagent file naming (2026-04-05):** Files are `agent-<agentId>.jsonl` where agentId is a hex string. The `a` prefix seen in filenames like `agent-ab502...` is the first hex digit of the ID, NOT a separate prefix. Path: `<sessionDir>/<sessionId>/subagents/agent-<agentId>.jsonl`. Each agent also has an `agent-<agentId>.meta.json`.
