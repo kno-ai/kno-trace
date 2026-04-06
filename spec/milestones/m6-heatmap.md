@@ -1,63 +1,163 @@
-# M6: File Intelligence & Heatmap
+# M6: Rich Detail Pane — File Intelligence, Diffs, and Live Activity
 
-**Prerequisites:** Read [spec/README.md](../README.md) (core spec) and `SCHEMA.md`. M5 must be complete (agent tree working, subagent files parsed).
+**Prerequisites:** M5 complete (agent data layer, live tailing working).
 
-**Goal:** The hot spot detector — which files are getting the most attention, and the complete change history of any file one keypress away. Includes file modifications from both the parent session and all agents.
+**Goal:** The detail pane becomes the control room. At a glance you see what's happening — files changing, diffs inline, agents working. Drill in for depth. This is where kno-trace stops being "the same as Claude Code's output" and becomes genuinely useful.
 
-**Deliverable:** Heatmap reveals session hot spots. File history shows the complete story of any file — including changes made by agents.
+**Deliverable:** A developer glances at the detail pane and immediately sees: which files are changing, what the changes look like, which agents are doing what. They drill into any item for full detail. The value is obvious within 5 seconds of opening.
 
-**Use cases served:** UC2 (what happened to this file?), UC6 (which files are getting thrashed?)
-
-**Control room role:** The heatmap is the "hot spot detector" — it surfaces which files are getting the most attention. During a live session, it updates as new prompts seal, so the user can glance at it to see if Claude is focused or thrashing. Because it includes agent file modifications, it gives a truthful picture of everything that changed — not just what the parent session touched directly.
+**Use cases served:** UC1 (what did Claude do?), UC2 (what happened to this file?), UC4 (what are agents doing?), UC6 (which files are getting thrashed?)
 
 ---
 
-## Scope
+## Design Principle: The Detail Pane is a Stack
 
-- `internal/replay/engine.go`:
-  - Builds `FileHistory` per file after full parse
-  - **Includes agent tool calls:** When building the file history, collect file-modifying tool calls (Write, Edit, Read) from both `Prompt.ToolCalls` (parent) and `Prompt.Agents[*].ToolCalls` (agents, including nested agents). All operations are interleaved by timestamp to produce a single chronological history per file. Agent tool calls have timestamps from the subagent JSONL — use these for ordering.
-  - **Agent attribution on file history entries:** Each entry in `FileHistory.PromptIdxs` / `FileHistory.Ops` should also track the source agent (empty string = parent). This allows the file history panel and heatmap to show "who" made each change: `#3 Edit internal/parser/jsonl.go (subagent-1)`.
-  - `GetContentAt(path string, promptIdx int) (string, error)` — implements Snapshot Reconstruction Algorithm exactly as specified in the core spec Data Model section. Because agent Write/Edit ops are now included in the timeline, the reconstruction naturally incorporates agent modifications. An agent Write becomes a snapshot in `WriteSnapshots`; an agent Edit applies `old_str/new_str` in sequence. This also **fixes replay accuracy** for parent Edits that follow agent Writes — without agent data, the parent's `old_str` wouldn't match the pre-agent content, producing spurious `WarnReplayGap`.
-  - `GetFileHistory(path string) *model.FileHistory`
-  - `ListFiles() []string` sorted by HeatScore descending
-- `internal/replay/diff.go` — `Compute(a, b string) []DiffHunk` via go-diff
-- `internal/ui/components/minidiff.go` — renders diff hunks:
-  - Max 8 context lines; `... N more lines` beyond that
-  - Teal for additions, red for deletions, muted for context
-- Inline mini-diffs in timeline detail pane (upgrade to M3/M4 rendering):
-  - Edit ops: always show old_str/new_str as mini unified diff inline
-  - Write ops where prior state exists: collapsed `> N lines changed — enter to expand`
-  - Write ops with no prior state (first write, no read baseline): no diff shown
-- `internal/ui/heatmap.go`:
-  - Files grouped by directory
-  - Per file: icon, name, intensity bar (0–100% proportional to HeatScore vs session max), count, op badges (W/R/E)
-  - **Agent badge:** Files that were modified by agents show a small `⬡` indicator next to the op badges. Files modified by both parent and agents show both.
-  - Top 3 files by HeatScore: bright name color
-  - Pin icon on CLAUDE.md files
-  - `enter` or `f` opens file history panel for that file
-  - File history panel: per-entry in chronological order — prompt index, op type, **agent label if from agent** (e.g., `subagent-1`), delta (+N/-M), mini-diff for Edit ops, excerpt of human text
-  - `/` search/filter in heatmap: filters file list by path (consistent with timeline search)
-    - Matches against full file path (partial matches work — e.g., `internal/ui/` shows all files in that directory)
-    - `enter` dismisses search bar, keeps filter; `esc` clears filter
-    - File count in view header updates to show `"N/M files"` when filtered
-  - `esc` / back button returns to heatmap tree
-  - `h` key activates heatmap view
-  - **Live updates:** During a live session, heatmap re-sorts and updates intensity bars as new prompts seal and as `MsgAgentToolCall` events arrive. A file that was cold can become hot mid-session — the user should see this without refreshing.
+The detail pane uses a consistent interaction model everywhere:
+
+- **j/k** navigate items at the current level
+- **enter** drills into the selected item
+- **esc** backs out one level
+- Every level has a breadcrumb showing where you are
+
+The stack:
+1. **Prompt summary** (top level) — header, human text, warnings, then sections for tool calls, agents, and file activity
+2. **Agent detail** — task description, tool calls, files touched with W/R/E counts (already built in M5)
+3. **Tool call detail** — for Edits: inline diff. For Bash: output. For Writes: content or diff against prior state.
+4. **File history** — all operations on a file across the session, with diffs at each step
+
+---
+
+## Build Order
+
+### Layer 1: Replay engine and inline diffs
+
+Build `internal/replay/engine.go` — the foundation for everything else.
+
+- Build `FileHistory` per file from all tool calls (parent + agent, interleaved by timestamp)
+- `GetContentAt(path, promptIdx)` — snapshot reconstruction
+- `Compute(a, b string) []DiffHunk` — diff computation via go-diff
+- Inline mini-diffs in the detail pane: Edit ops show old/new as a colored unified diff right in the tool call list. No drilling required — you see the diff at a glance.
+- Write ops where prior state exists: show line count delta, enter to see full diff
+
+**Checkpoint:** Open a completed session with Edits. See colored diffs inline in the detail pane for every Edit tool call. `--dump` shows diffs.
+
+### Layer 2: File activity section in detail pane
+
+Add a "Files" section at the bottom of the prompt detail showing all files touched in this prompt (parent + agents), with:
+
+- File path, operation badges (W/R/E), agent attribution
+- HeatScore indicator (total ops on this file across the session, not just this prompt)
+- Files sorted by activity (most-touched first)
+- Conflict warnings inline for files touched by multiple agents
+
+This is the "hot spot detector" — visible at a glance without switching views.
+
+**Checkpoint:** Open a session. Scroll down in the detail pane. See which files were touched, by whom, with what intensity. Files with high churn across the session stand out.
+
+### Layer 3: Drill-in for tool calls and file history
+
+Make every item in the detail pane drillable:
+
+- **Enter on an Edit tool call** → shows the full diff (already partially visible from Layer 1 inline diffs, but enter shows it with more context)
+- **Enter on a Bash tool call** → shows the full command and output
+- **Enter on a file in the Files section** → shows the complete file history: every operation across the entire session, with diffs at each step, agent attribution, timestamp. This is the answer to "what happened to this file?"
+
+All drill-ins use the same enter/esc/breadcrumb pattern as agent expansion.
+
+**Checkpoint:** Navigate to a prompt. Enter on an Edit → see the diff. Esc back. Scroll to Files section. Enter on a file → see its full history across the session.
+
+### Layer 4: Live activity improvements
+
+Make running agents more visible without drilling in:
+
+- Running agents show their **latest tool call inline** in the collapsed summary:
+  ```
+  ⬡ subagent-1 (Explore) — running 14s
+      → Edit internal/ui/detail.go
+  ```
+- Completed agents show file count and churn summary:
+  ```
+  ⬡ subagent-1 (Explore) — done 25s — 4 files, 2 edits
+  ```
+- File activity section updates live as agent tool calls arrive
+
+**Checkpoint:** Run alongside Claude Code spawning agents. See agent activity updating in real time in the collapsed view. See the Files section grow as agents touch files.
+
+---
+
+## Scope Details
+
+### Replay engine (`internal/replay/engine.go`)
+
+- Builds `FileHistory` per file after full session parse
+- Includes agent tool calls: collect Write/Edit/Read from `Prompt.ToolCalls` AND `Prompt.Agents[*].ToolCalls`, interleaved by timestamp
+- Agent attribution: each entry tracks source agent (empty = parent)
+- `GetContentAt(path, promptIdx)`: snapshot reconstruction per spec
+- `GetFileHistory(path)`: returns the FileHistory for a file
+- `ListFiles()`: sorted by HeatScore descending
+- Bounded: WriteSnapshots capped per config (`max_snapshots_per_file`)
+
+### Diff computation (`internal/replay/diff.go`)
+
+- `Compute(a, b string) []DiffHunk` via go-diff
+- DiffHunk: type (add/del/context), line number, content
+- Truncation: max lines per hunk configurable, `... N more lines` beyond
+
+### Inline mini-diffs in detail pane
+
+- Edit ops: always show old_str → new_str as colored diff (teal additions, red deletions)
+- Write ops with prior state: `+N -M lines — enter to expand`
+- Write ops without prior state: just show path and line count
+- Max ~6 lines inline; enter for full view
+
+### File activity section
+
+- Appears at the bottom of prompt detail, below tool calls and agents
+- Shows all files touched in this prompt (parent + all agents)
+- Per file: path, op badges (W×N R×M E×K), agent labels, heat indicator
+- Heat indicator: visual intensity based on total session HeatScore for that file
+- Sorted by HeatScore descending (most-thrashed first)
+- Navigable: j/k when cursor is in this section, enter for file history
 
 ---
 
 ## Acceptance Criteria
 
-- Heatmap correctly identifies most-modified files — including files modified only by agents
-- Files modified by agents show `⬡` indicator in heatmap
-- File history shows agent-attributed entries with correct agent label
-- Intensity bars scale correctly relative to session max HeatScore
-- File history shows all operations (parent and agent) in chronological order by timestamp
-- Mini-diffs render correctly for Edit ops (both parent and agent)
-- Write diffs correctly collapsed/expandable when prior state exists
-- Baseline correctly seeded from Read op (parent or agent)
-- Agent Write followed by parent Edit: `GetContentAt()` correctly uses agent Write as base (no spurious `WarnReplayGap`)
-- `WarnReplayGap` generated on genuinely unresolvable Edit; no crash
-- `GetContentAt()` correct at every prompt index for `simple.jsonl` fixture
-- All replay unit tests pass
+### Replay engine
+- `GetContentAt()` correct for simple.jsonl and replay_chain.jsonl fixtures
+- Agent Write followed by parent Edit correctly reconstructed
+- `WarnReplayGap` on genuinely unresolvable Edit; no crash on malformed data
+- WriteSnapshots bounded by config
+
+### Inline diffs
+- Edit diffs render correctly with colored add/del lines
+- Write diffs show correct line delta
+- Long diffs truncated with "... N more lines"
+- Diffs work for both parent and agent tool calls
+
+### File activity
+- Files section shows all files from prompt (parent + agents)
+- Agent attribution correct
+- HeatScore reflects session-wide activity, not just current prompt
+- Sorted by activity
+- Live updates as agent tool calls arrive
+
+### Drill-in
+- Enter on Edit → full diff view
+- Enter on Bash → command + output
+- Enter on file → complete file history with per-step diffs
+- Esc from any drill-in → back to previous level
+- Breadcrumb correct at every level
+
+### Live activity
+- Running agents show latest tool call inline
+- Completed agents show file/edit counts
+- File activity section updates as MsgAgentToolCall arrives
+
+---
+
+## Notes
+
+- The old M6 (heatmap as a separate view) is folded into the detail pane as the "Files" section. No separate `h` key, no separate view. The detail pane IS the heatmap — sorted by activity, with heat indicators.
+- The old M7 (diff view with mark workflow) is partially folded into this milestone (inline diffs, file history drill-in). The full session-scoped diff between two arbitrary prompts is deferred to M7.
+- This milestone is the one that makes kno-trace worth opening. Everything before this was plumbing.

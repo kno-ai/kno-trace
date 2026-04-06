@@ -81,7 +81,7 @@ After agents complete, the developer needs:
 
 This use case should feel like watching multiple workers on a construction site from a control room. Not a post-mortem — a live feed.
 
-**Served by:** Live ticker with agent attribution (M4), agent activity in stats bar (M4), agent tree (M5), swimlane with live updates (M5), agent detail expansion (M5)
+**Served by:** Live ticker with agent attribution (M4), agent activity in stats bar (M4), agent tree and live tailing (M5), agent detail expansion with inline diffs and file activity (M5/M6)
 
 ### UC5: "Is my context filling up?"
 
@@ -799,12 +799,12 @@ Each milestone builds progressively toward the control room vision:
 | M2 | Parser, Builder & Live Tail | Data pipeline — JSONL becomes structured data, live streaming works | [m2-parser.md](milestones/m2-parser.md) |
 | M3 | Static Timeline | **Core layout** — navigable timeline with badges, search, detail pane | [m3-static-timeline.md](milestones/m3-static-timeline.md) |
 | M4 | Live Timeline & Ticker | **Control room comes alive** — real-time updates, ticker, loop detection, auto-follow | [m4-live-timeline.md](milestones/m4-live-timeline.md) |
-| M5 | Agent Tree & Swimlane | **Flagship view** — live agent dashboard, parallel lanes, conflict detection | [m5-agents.md](milestones/m5-agents.md) |
-| M6 | File Intelligence & Heatmap | Hot spot detector — which files are getting thrashed, full change history | [m6-heatmap.md](milestones/m6-heatmap.md) |
-| M7 | Diff View | Before/after comparison — what changed between any two points | [m7-diff.md](milestones/m7-diff.md) |
+| M5 | Agent Data Layer | ✅ Agent tree builder, live subagent tailing, enrichment — data ready | [m5-agents.md](milestones/m5-agents.md) |
+| M6 | Rich Detail Pane | **The value milestone** — inline diffs, file intelligence, live agent activity, drill-in everywhere | [m6-heatmap.md](milestones/m6-heatmap.md) |
+| M7 | Session-Scoped Diff | Before/after comparison — what changed between any two prompts | [m7-diff.md](milestones/m7-diff.md) |
 | M8 | Release Polish & Distribution | Ship it — `brew install kno-trace`, README with control room pitch | [m8-release.md](milestones/m8-release.md) |
 
-**The control room is usable at M3.** By M4 it's a daily driver for live sessions. By M5 it's compelling for the target audience (agent power users). M6-M8 add analytical depth and polish.
+**The control room is usable at M3.** By M4 it's a daily driver for live sessions. M5 built the agent data layer. **M6 is where kno-trace becomes genuinely useful** — inline diffs, file churn, live agent activity. This is the milestone that makes a developer want to keep it open. M7-M8 add analytical depth and polish.
 
 ---
 
