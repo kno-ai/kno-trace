@@ -188,6 +188,13 @@ func (d *Detail) ScrollTop() {
 	d.Offset = 0
 }
 
+// ScrollToBottom sets offset to show the last lines of content.
+// Used by auto-follow to keep new activity visible.
+func (d *Detail) ScrollToBottom() {
+	// Set to a large value — applyScroll will clamp it to maxOffset.
+	d.Offset = 999999
+}
+
 func (d *Detail) renderHeader(b *strings.Builder, p *model.Prompt, isLive bool) {
 	// Time range.
 	start := p.StartTime.Local().Format("15:04:05")

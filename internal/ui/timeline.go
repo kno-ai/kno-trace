@@ -19,6 +19,10 @@ type timelineModel struct {
 	width     int
 	height    int
 
+	// splitPct controls the left/right pane split (0-100, percentage for left pane).
+	// Default 40. Adjusted with [ and ].
+	splitPct int
+
 	// Search/filter state.
 	filtering    bool
 	filter       string
@@ -32,9 +36,10 @@ type timelineModel struct {
 
 func newTimeline(session *model.Session) timelineModel {
 	return timelineModel{
-		session: session,
-		list:    NewPromptList(session),
-		detail:  Detail{agentCursor: -1},
+		session:  session,
+		list:     NewPromptList(session),
+		detail:   Detail{agentCursor: -1},
+		splitPct: 40,
 	}
 }
 
@@ -42,11 +47,15 @@ func (t *timelineModel) setSize(w, h int) {
 	t.width = w
 	t.height = h
 
-	// Split: left pane ~40%, right pane ~60%, minus borders/padding.
-	listWidth := w * 2 / 5
-	if listWidth < 25 {
-		listWidth = min(25, w)
+	if t.splitPct < 15 {
+		t.splitPct = 15
 	}
+	if t.splitPct > 85 {
+		t.splitPct = 85
+	}
+
+	// Split using splitPct, minus divider padding.
+	listWidth := max(15, w*t.splitPct/100)
 	detailWidth := max(1, w-listWidth-3) // 3 for divider + padding
 
 	// Reserve lines for bottom: stats bar + padding + ticker (when live).
@@ -87,6 +96,12 @@ func (t timelineModel) updateNormal(msg tea.KeyMsg) (timelineModel, tea.Cmd) {
 		t.detail.ScrollDown()
 	case "h", "left":
 		t.detail.ScrollUp()
+	case "[":
+		t.splitPct -= 5
+		t.setSize(t.width, t.height)
+	case "]":
+		t.splitPct += 5
+		t.setSize(t.width, t.height)
 	}
 
 	// Reset detail scroll when cursor moves.
@@ -198,6 +213,14 @@ func (t *timelineModel) syncSession(s *model.Session) {
 			compactSet[idx] = true
 		}
 		t.list.CompactAt = compactSet
+	}
+
+	// Auto-follow: keep cursor on latest prompt and scroll detail to bottom
+	// so new activity (tool calls, agents) is visible as it arrives.
+	if t.autoFollow && len(t.list.Prompts) > 0 {
+		t.list.Cursor = len(t.list.Prompts) - 1
+		t.list.ensureVisible()
+		t.detail.ScrollToBottom()
 	}
 
 	// Recalculate layout (ticker visibility may have changed).
@@ -359,6 +382,7 @@ func (t timelineModel) statsBar() string {
 	// Key hints.
 	keys := KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("nav") + "  " +
 		KeyStyle.Render("enter") + " " + KeyDescStyle.Render("expand") + "  " +
+		KeyStyle.Render("[/]") + " " + KeyDescStyle.Render("resize") + "  " +
 		KeyStyle.Render("/") + " " + KeyDescStyle.Render("filter") + "  " +
 		KeyStyle.Render("P") + " " + KeyDescStyle.Render("picker") + "  " +
 		KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")
