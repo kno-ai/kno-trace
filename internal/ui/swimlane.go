@@ -26,13 +26,23 @@ type swimlaneModel struct {
 	// scroll tracks vertical scroll offset within the lanes.
 	scroll int
 
+	// laneCursor selects which lane is focused (-1 = parent, 0+ = agent index).
+	laneCursor int
+
+	// collapsed tracks which lanes have their tool blocks hidden.
+	// Key is agent index (or -1 for parent).
+	collapsed map[int]bool
+
 	// isLive mirrors session.IsLive.
 	isLive bool
 }
 
 func newSwimlane(session *model.Session) swimlaneModel {
-	s := swimlaneModel{session: session}
-	// Auto-select the last prompt with agents.
+	s := swimlaneModel{
+		session:    session,
+		laneCursor: -1, // start on parent lane
+		collapsed:  make(map[int]bool),
+	}
 	s.promptIdx = s.lastPromptWithAgents()
 	return s
 }
@@ -49,21 +59,42 @@ func (s *swimlaneModel) syncSession(session *model.Session) {
 
 // Update handles key input for the swimlane view.
 func (s swimlaneModel) Update(msg tea.KeyMsg) (swimlaneModel, tea.Cmd) {
+	prompt := s.selectedPrompt()
+	agentCount := 0
+	if prompt != nil {
+		agentCount = len(prompt.Agents)
+	}
+
 	switch msg.String() {
 	case "j", "down":
-		s.scroll++
+		// Navigate between lanes.
+		if s.laneCursor < agentCount-1 {
+			s.laneCursor++
+		}
 	case "k", "up":
-		if s.scroll > 0 {
-			s.scroll--
+		// Navigate between lanes (-1 = parent).
+		if s.laneCursor > -1 {
+			s.laneCursor--
 		}
 	case "g":
+		s.laneCursor = -1
 		s.scroll = 0
 	case "G":
-		s.scroll = 999 // clamped during render
+		s.laneCursor = max(0, agentCount-1)
+	case "enter":
+		// Toggle collapse/expand on the focused lane.
+		if s.collapsed == nil {
+			s.collapsed = make(map[int]bool)
+		}
+		s.collapsed[s.laneCursor] = !s.collapsed[s.laneCursor]
 	case "n", "right", "l", "tab":
 		s.nextPromptWithAgents()
+		s.laneCursor = -1
+		s.collapsed = make(map[int]bool)
 	case "N", "left", "h", "shift+tab":
 		s.prevPromptWithAgents()
+		s.laneCursor = -1
+		s.collapsed = make(map[int]bool)
 	}
 	return s, nil
 }
@@ -156,13 +187,17 @@ func (s swimlaneModel) renderLanes(prompt *model.Prompt, w int) string {
 	var lines []string
 
 	// Parent lane — shows spawn points and completion.
-	lines = append(lines, s.renderParentLane(prompt, w))
+	isFocused := s.laneCursor == -1
+	isCollapsed := s.collapsed[-1]
+	lines = append(lines, s.renderParentLane(prompt, w, isFocused, isCollapsed))
 	lines = append(lines, "")
 
 	// Agent lanes.
 	for i, ag := range prompt.Agents {
 		color := AgentColors[i%len(AgentColors)]
-		lines = append(lines, s.renderAgentLane(ag, prompt, color, w)...)
+		isFocused := s.laneCursor == i
+		isCollapsed := s.collapsed[i]
+		lines = append(lines, s.renderAgentLane(ag, prompt, color, w, isFocused, isCollapsed)...)
 		lines = append(lines, "")
 	}
 
@@ -195,9 +230,14 @@ func (s swimlaneModel) renderLanes(prompt *model.Prompt, w int) string {
 }
 
 // renderParentLane shows agent spawn/completion events from the parent prompt.
-func (s swimlaneModel) renderParentLane(prompt *model.Prompt, w int) string {
+func (s swimlaneModel) renderParentLane(prompt *model.Prompt, w int, isFocused, isCollapsed bool) string {
+	cursor := "  "
+	if isFocused {
+		cursor = SelectedStyle.Render("> ")
+	}
+
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorBrandTeal)
-	header := headerStyle.Render("  parent")
+	header := cursor + headerStyle.Render("parent")
 
 	// Show the parent's duration if available.
 	if !prompt.StartTime.IsZero() && !prompt.EndTime.IsZero() {
@@ -206,10 +246,23 @@ func (s swimlaneModel) renderParentLane(prompt *model.Prompt, w int) string {
 		header += "  " + DimStyle.Render(FormatDuration(time.Since(prompt.StartTime)))
 	}
 
+	if isCollapsed {
+		agentSpawns := 0
+		for _, tc := range prompt.ToolCalls {
+			if tc.Type == model.ToolAgent {
+				agentSpawns++
+			}
+		}
+		if agentSpawns > 0 {
+			header += "  " + DimStyle.Render(fmt.Sprintf("(%d spawns)", agentSpawns))
+		}
+		return header
+	}
+
 	var blocks []string
 	for _, tc := range prompt.ToolCalls {
 		if tc.Type == model.ToolAgent {
-			blocks = append(blocks, DimStyle.Render(fmt.Sprintf("    spawn %s", tc.AgentDescription)))
+			blocks = append(blocks, DimStyle.Render(fmt.Sprintf("    spawn %s", Truncate(tc.AgentDescription, w-15))))
 		}
 	}
 
@@ -221,12 +274,16 @@ func (s swimlaneModel) renderParentLane(prompt *model.Prompt, w int) string {
 }
 
 // renderAgentLane renders a single agent's lane with header and tool blocks.
-func (s swimlaneModel) renderAgentLane(ag *model.AgentNode, prompt *model.Prompt, color lipgloss.Color, w int) []string {
+func (s swimlaneModel) renderAgentLane(ag *model.AgentNode, prompt *model.Prompt, color lipgloss.Color, w int, isFocused, isCollapsed bool) []string {
 	var lines []string
 
 	// Lane header.
+	cursor := "  "
+	if isFocused {
+		cursor = SelectedStyle.Render("> ")
+	}
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(color)
-	header := headerStyle.Render("  " + ag.Label)
+	header := cursor + headerStyle.Render(ag.Label)
 
 	// Type and model.
 	typeLabel := ag.SubagentType
@@ -266,6 +323,16 @@ func (s swimlaneModel) renderAgentLane(ag *model.AgentNode, prompt *model.Prompt
 	}
 
 	lines = append(lines, header)
+
+	// Collapsed: show summary line only.
+	if isCollapsed {
+		summary := fmt.Sprintf("    %d tools", len(ag.ToolCalls))
+		if len(ag.FilesTouched) > 0 {
+			summary += fmt.Sprintf(", %d files", len(ag.FilesTouched))
+		}
+		lines = append(lines, DimStyle.Render(summary))
+		return lines
+	}
 
 	// Tool blocks.
 	blockStyle := lipgloss.NewStyle().Foreground(color)
@@ -379,10 +446,10 @@ func (s *swimlaneModel) lastPromptWithAgents() int {
 }
 
 func (s swimlaneModel) statusBar() string {
-	keys := KeyStyle.Render("←/→") + " " + KeyDescStyle.Render("prompt") + "  " +
-		KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("scroll") + "  " +
+	keys := KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("lane") + "  " +
+		KeyStyle.Render("enter") + " " + KeyDescStyle.Render("toggle") + "  " +
+		KeyStyle.Render("←/→") + " " + KeyDescStyle.Render("prompt") + "  " +
 		KeyStyle.Render("esc") + " " + KeyDescStyle.Render("timeline") + "  " +
-		KeyStyle.Render("P") + " " + KeyDescStyle.Render("picker") + "  " +
 		KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")
 	return StatusBarStyle.Render(keys)
 }

@@ -19,6 +19,11 @@ type Detail struct {
 	// Empty = viewing the prompt-level summary.
 	expandedPath []string
 
+	// expandedCursors tracks the agent cursor position at each expansion level.
+	// When collapsing, the cursor is restored from this stack so the user lands
+	// back on the agent they just collapsed from.
+	expandedCursors []int
+
 	// agentCursor tracks which agent is focused for enter/navigation.
 	// -1 = no agent focused (tool calls or text area has focus).
 	// Must be initialized to -1 via NewDetail or ResetExpansion.
@@ -117,19 +122,28 @@ func (d *Detail) ExpandAgent(agents []*model.AgentNode) bool {
 	}
 	ag := agents[d.agentCursor]
 	d.expandedPath = append(d.expandedPath, ag.ToolUseID)
+	// Save cursor position so collapse restores it.
+	d.expandedCursors = append(d.expandedCursors, d.agentCursor)
 	d.agentCursor = -1
 	d.Offset = 0
 	return true
 }
 
 // CollapseAgent pops one level of agent expansion (esc key).
-// Returns true if a level was collapsed (false = already at prompt level).
+// Restores the agent cursor to the position before expansion, so the user
+// lands back on the agent they just collapsed from.
 func (d *Detail) CollapseAgent() bool {
 	if len(d.expandedPath) == 0 {
 		return false
 	}
 	d.expandedPath = d.expandedPath[:len(d.expandedPath)-1]
-	d.agentCursor = -1
+	// Restore cursor from the saved stack.
+	if len(d.expandedCursors) > 0 {
+		d.agentCursor = d.expandedCursors[len(d.expandedCursors)-1]
+		d.expandedCursors = d.expandedCursors[:len(d.expandedCursors)-1]
+	} else {
+		d.agentCursor = 0
+	}
 	d.Offset = 0
 	return true
 }
@@ -155,6 +169,7 @@ func (d *Detail) AgentCursorUp() {
 // Called when the user navigates to a different prompt.
 func (d *Detail) ResetExpansion() {
 	d.expandedPath = nil
+	d.expandedCursors = nil
 	d.agentCursor = -1
 }
 
