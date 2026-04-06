@@ -359,7 +359,6 @@ func (t timelineModel) statsBar() string {
 	// Key hints.
 	keys := KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("nav") + "  " +
 		KeyStyle.Render("enter") + " " + KeyDescStyle.Render("expand") + "  " +
-		KeyStyle.Render("s") + " " + KeyDescStyle.Render("swimlane") + "  " +
 		KeyStyle.Render("/") + " " + KeyDescStyle.Render("filter") + "  " +
 		KeyStyle.Render("P") + " " + KeyDescStyle.Render("picker") + "  " +
 		KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")

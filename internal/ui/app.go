@@ -25,7 +25,6 @@ const (
 	viewPicker   viewMode = iota
 	viewLoading           // session selected, watcher replaying
 	viewTimeline          // full timeline view
-	viewSwimlane          // agent swimlane view
 )
 
 // tickMsg fires every second during live sessions for elapsed time updates.
@@ -43,7 +42,6 @@ type App struct {
 	view        viewMode
 	picker      pickerModel
 	timeline    timelineModel
-	swimlane    swimlaneModel
 	sessionMeta *model.SessionMeta // selected session metadata
 	session     *model.Session     // fully parsed session (built incrementally)
 	events      []*parser.RawEvent // accumulated events from watcher
@@ -168,7 +166,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.picker.width = msg.Width
 		a.picker.height = msg.Height
 		a.timeline.setSize(msg.Width, msg.Height)
-		a.swimlane.setSize(msg.Width, msg.Height)
 		return a, nil
 
 	case msgWatcherStarted:
@@ -209,8 +206,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a.updateLoading(msg)
 		case viewTimeline:
 			return a.updateTimeline(msg)
-		case viewSwimlane:
-			return a.updateSwimlane(msg)
 		}
 	}
 
@@ -223,7 +218,7 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 	case watcher.MsgNewEvents:
 		// If we're in a session view (live mode), do incremental rebuild.
 		// Only pass the new events to avoid unbounded accumulation.
-		if (a.view == viewTimeline || a.view == viewSwimlane) && a.session != nil {
+		if a.view == viewTimeline && a.session != nil {
 			var branch string
 			var sealedIdxs []int
 			branch, sealedIdxs, a.agentCounter = parser.RebuildActivePrompt(
@@ -237,9 +232,8 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 			tickerEntries := extractTickerEntries(msg.Events)
 			a.timeline.ticker.Push(tickerEntries)
 
-			// Update the timeline and swimlane session references.
+			// Update the timeline's session reference.
 			a.timeline.syncSession(a.session)
-			a.swimlane.syncSession(a.session)
 
 			// Auto-follow on new sealed prompts.
 			if len(sealedIdxs) > 0 {
@@ -376,7 +370,6 @@ func (a *App) handleAgentWatcherMsg(msg interface{}) tea.Cmd {
 						a.checkLiveConflict(prompt, ag, msg.ToolCall.Path)
 					}
 					a.timeline.syncSession(a.session)
-					a.swimlane.syncSession(a.session)
 					return nil
 				}
 			}
@@ -654,15 +647,6 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.view = viewPicker
 		a.statusMsg = ""
 		return a, nil
-	case "s":
-		// Switch to swimlane view.
-		if a.session != nil {
-			a.swimlane = newSwimlane(a.session)
-			a.swimlane.setSize(a.width, a.height)
-			a.swimlane.isLive = a.session.IsLive
-			a.view = viewSwimlane
-		}
-		return a, nil
 	case "enter":
 		selected := a.timeline.list.SelectedPrompt()
 		if selected == nil {
@@ -758,28 +742,6 @@ func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-func (a App) updateSwimlane(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q":
-		a.cleanup()
-		return a, tea.Quit
-	case "P":
-		a.resetSession()
-		a.refreshPicker()
-		a.view = viewPicker
-		a.statusMsg = ""
-		return a, nil
-	case "esc", "s":
-		// Back to timeline.
-		a.view = viewTimeline
-		return a, nil
-	}
-
-	var cmd tea.Cmd
-	a.swimlane, cmd = a.swimlane.Update(msg)
-	return a, cmd
-}
-
 // cleanup stops the watcher and agent watcher if running. Safe to call multiple times.
 func (a *App) cleanup() {
 	if a.agentWatcher != nil {
@@ -836,8 +798,6 @@ func (a App) View() string {
 		return a.viewLoading()
 	case viewTimeline:
 		return a.timeline.View()
-	case viewSwimlane:
-		return a.swimlane.View()
 	default:
 		return ""
 	}
