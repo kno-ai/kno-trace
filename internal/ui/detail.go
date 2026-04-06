@@ -14,19 +14,19 @@ type Detail struct {
 	Height int
 	Offset int // scroll offset for long content
 
+	// HasFocus is true when the detail pane is the active pane (j/k navigate
+	// items within the detail rather than turns in the left pane). Set by
+	// pressing enter on a turn, cleared by esc.
+	HasFocus bool
+
 	// Agent expansion state. When non-empty, we're viewing an expanded agent.
-	// Each entry is the ToolUseID of the agent at that depth level.
-	// Empty = viewing the prompt-level summary.
 	expandedPath []string
 
 	// expandedCursors tracks the agent cursor position at each expansion level.
-	// When collapsing, the cursor is restored from this stack so the user lands
-	// back on the agent they just collapsed from.
 	expandedCursors []int
 
 	// agentCursor tracks which agent is focused for enter/navigation.
-	// -1 = no agent focused (tool calls or text area has focus).
-	// Must be initialized to -1 via NewDetail or ResetExpansion.
+	// -1 = no agent focused. Must be initialized to -1.
 	agentCursor int
 }
 
@@ -171,6 +171,7 @@ func (d *Detail) ResetExpansion() {
 	d.expandedPath = nil
 	d.expandedCursors = nil
 	d.agentCursor = -1
+	d.HasFocus = false
 }
 
 func (d *Detail) ScrollDown() {

@@ -97,7 +97,7 @@ func main() {
 		if time.Since(latest.EndTime) < maxAge {
 			allSessions, _ := scanAllCapped(cfg) // Error is non-fatal — picker works with nil sessions.
 			statusMsg := fmt.Sprintf(
-				"Opened latest session for %s — P to pick a different session",
+				"Opened latest session for %s — esc for session list",
 				latest.ProjectName)
 			app := ui.NewAppWithSession(allSessions, latest, statusMsg, cfg)
 			runTUI(app)

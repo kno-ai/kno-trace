@@ -18,19 +18,18 @@ import (
 	"github.com/kno-ai/kno-trace/internal/watcher"
 )
 
-// viewMode tracks which screen is currently displayed.
-type viewMode int
+// leftPane tracks what the left pane is showing.
+type leftPane int
 
 const (
-	viewPicker   viewMode = iota
-	viewLoading           // session selected, watcher replaying
-	viewTimeline          // full timeline view
+	leftSessions leftPane = iota // session list (top level)
+	leftLoading                  // loading a session (transient)
+	leftTurns                    // turns within a session
 )
 
 // tickMsg fires every second during live sessions for elapsed time updates.
 type tickMsg time.Time
 
-// tickCmd returns a Cmd that sends a tickMsg after 1 second.
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
@@ -39,60 +38,56 @@ func tickCmd() tea.Cmd {
 
 // App is the root Bubbletea model for kno-trace.
 type App struct {
-	view        viewMode
-	picker      pickerModel
-	timeline    timelineModel
-	sessionMeta *model.SessionMeta // selected session metadata
-	session     *model.Session     // fully parsed session (built incrementally)
-	events      []*parser.RawEvent // accumulated events from watcher
+	left        leftPane
+	sessions    sessionListModel     // session list for the left pane
+	timeline    timelineModel        // turns + detail for when a session is open
+	sessionMeta *model.SessionMeta   // selected session metadata
+	session     *model.Session       // fully parsed session
+	events      []*parser.RawEvent   // accumulated events during loading
 	statusMsg   string
-	allSessions []*model.SessionMeta
 	cfg         *config.Config
 	stopWatcher func()
 	width       int
 	height      int
 
 	// Live session state.
-	liveToolCallsByID map[string]*model.ToolCall // carried across incremental builds
-	lastBranch        string                      // most recent git branch, carried across incremental calls
-	agentCounter      int                          // agent numbering sequence, carried across incremental calls
-	agentWatcher       *agent.AgentWatcher          // live subagent file tailer (nil for completed sessions)
-	agentWatcherCh     <-chan interface{}            // receive side for waitForAgentWatcher
-	agentWatcherSendCh chan interface{}              // send side — closed on cleanup to unblock waitForAgentWatcher
-	agentWatcherDone   chan struct{}                 // closed on cleanup to unblock send callback
+	liveToolCallsByID  map[string]*model.ToolCall
+	lastBranch         string
+	agentCounter       int
+	agentWatcher       *agent.AgentWatcher
+	agentWatcherCh     <-chan interface{}
+	agentWatcherSendCh chan interface{}
+	agentWatcherDone   chan struct{}
 }
 
-// NewApp creates the root model starting at the session picker.
+// NewApp creates the root model starting at the session list.
 func NewApp(sessions []*model.SessionMeta, cfg *config.Config) App {
 	return App{
-		view:        viewPicker,
-		picker:      newPicker(sessions),
-		allSessions: sessions,
-		cfg:         cfg,
+		left:     leftSessions,
+		sessions: newSessionList(sessions),
+		cfg:      cfg,
 	}
 }
 
 // NewAppWithSession creates the root model auto-opened to a session.
-// Starts loading immediately — the watcher will be launched in Init().
 func NewAppWithSession(sessions []*model.SessionMeta, session *model.SessionMeta, statusMsg string, cfg *config.Config) App {
 	return App{
-		view:        viewLoading,
-		picker:      newPicker(sessions),
+		left:        leftLoading,
+		sessions:    newSessionList(sessions),
 		sessionMeta: session,
 		statusMsg:   statusMsg,
-		allSessions: sessions,
 		cfg:         cfg,
 	}
 }
 
 func (a App) Init() tea.Cmd {
-	if a.view == viewLoading && a.sessionMeta != nil {
+	if a.left == leftLoading && a.sessionMeta != nil {
 		return a.startWatcher(a.sessionMeta.FilePath)
 	}
 	return nil
 }
 
-// startWatcher launches the watcher goroutine and returns a Cmd that sends its first message.
+// startWatcher launches the watcher goroutine.
 func (a App) startWatcher(path string) tea.Cmd {
 	return func() tea.Msg {
 		ch := make(chan tea.Msg, 256)
@@ -101,30 +96,23 @@ func (a App) startWatcher(path string) tea.Cmd {
 			select {
 			case ch <- msg:
 			case <-done:
-				// Watcher was stopped — discard the message.
 			}
 		})
 		stopTailer := tailer.Start()
-
-		// Wrap the stop function: signal done first (unblocks send),
-		// then stop the tailer, then close ch (unblocks waitForWatcher).
 		stop := func() {
 			close(done)
 			stopTailer()
 			close(ch)
 		}
-
 		return msgWatcherStarted{ch: ch, stop: stop}
 	}
 }
 
-// Internal messages for watcher integration.
 type msgWatcherStarted struct {
 	ch   <-chan tea.Msg
 	stop func()
 }
 
-// waitForWatcher returns a Cmd that waits for the next message from the watcher channel.
 func waitForWatcher(ch <-chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-ch
@@ -140,14 +128,11 @@ type msgWatcherEvent struct {
 	ch    <-chan tea.Msg
 }
 
-// msgAgentWatcherEvent wraps a message from the agent watcher channel.
 type msgAgentWatcherEvent struct {
 	inner interface{}
 	ch    <-chan interface{}
 }
 
-// waitForAgentWatcher returns a Cmd that waits for the next agent watcher message.
-// Returns nil when the channel is closed or done is signaled (cleanup).
 func waitForAgentWatcher(ch <-chan interface{}) tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-ch
@@ -158,13 +143,15 @@ func waitForAgentWatcher(ch <-chan interface{}) tea.Cmd {
 	}
 }
 
+// msgSessionRefresh signals a rescan of sessions.
+type msgSessionRefresh struct{}
+
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.picker.width = msg.Width
-		a.picker.height = msg.Height
+		a.sessions.setSize(msg.Width, msg.Height)
 		a.timeline.setSize(msg.Width, msg.Height)
 		return a, nil
 
@@ -174,21 +161,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case msgWatcherEvent:
 		cmd := a.handleWatcherMsg(msg.inner)
-		// Keep listening for more watcher messages.
 		return a, tea.Batch(cmd, waitForWatcher(msg.ch))
 
 	case msgAgentWatcherEvent:
 		cmd := a.handleAgentWatcherMsg(msg.inner)
 		return a, tea.Batch(cmd, waitForAgentWatcher(msg.ch))
 
-	case msgPickerRefresh:
-		a.refreshPicker()
+	case msgSessionRefresh:
+		a.refreshSessions()
 		a.statusMsg = ""
 		return a, nil
 
 	case tickMsg:
-		// Re-issue tick only if we're in a live timeline view.
-		if a.view == viewTimeline && a.session != nil && a.session.IsLive {
+		if a.left == leftTurns && a.session != nil && a.session.IsLive {
 			return a, tickCmd()
 		}
 		return a, nil
@@ -199,71 +184,232 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		}
 
-		switch a.view {
-		case viewPicker:
-			return a.updatePicker(msg)
-		case viewLoading:
+		switch a.left {
+		case leftSessions:
+			return a.updateSessions(msg)
+		case leftLoading:
 			return a.updateLoading(msg)
-		case viewTimeline:
-			return a.updateTimeline(msg)
+		case leftTurns:
+			return a.updateTurns(msg)
 		}
 	}
 
 	return a, nil
 }
 
-// handleWatcherMsg processes a message from the watcher goroutine.
+// --- Session list (left pane = sessions) ---
+
+func (a App) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.sessions.filtering {
+		var cmd tea.Cmd
+		a.sessions, cmd = a.sessions.Update(msg)
+		return a, cmd
+	}
+
+	switch msg.String() {
+	case "enter":
+		sel := a.sessions.selectedSession()
+		if sel != nil {
+			a.resetSession()
+			a.sessionMeta = sel
+			a.left = leftLoading
+			a.statusMsg = ""
+			return a, a.startWatcher(sel.FilePath)
+		}
+		return a, nil
+	case "q":
+		a.cleanup()
+		return a, tea.Quit
+	case "esc":
+		if a.sessions.filter != "" {
+			a.sessions.clearFilter()
+			return a, nil
+		}
+		a.cleanup()
+		return a, tea.Quit
+	case "R":
+		a.refreshSessions()
+		return a, nil
+	}
+
+	var cmd tea.Cmd
+	a.sessions, cmd = a.sessions.Update(msg)
+	return a, cmd
+}
+
+func (a App) updateLoading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		a.cleanup()
+		return a, tea.Quit
+	case "esc":
+		a.resetSession()
+		a.refreshSessions()
+		a.left = leftSessions
+		return a, nil
+	}
+	return a, nil
+}
+
+// --- Turns (left pane = turns, right pane = detail) ---
+
+func (a App) updateTurns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// If filtering, let the timeline handle all keys.
+	if a.timeline.filtering {
+		var cmd tea.Cmd
+		a.timeline, cmd = a.timeline.Update(msg)
+		return a, cmd
+	}
+
+	// If detail pane has focus, route keys there.
+	if a.timeline.detail.HasFocus {
+		return a.updateDetailFocused(msg)
+	}
+
+	// Left pane (turns list) has focus.
+	switch msg.String() {
+	case "q":
+		a.cleanup()
+		return a, tea.Quit
+	case "esc":
+		if a.timeline.filter != "" {
+			a.timeline.filter = ""
+			a.timeline.filteredIdxs = nil
+			a.timeline.restoreFullList()
+			return a, nil
+		}
+		// Back to sessions.
+		a.resetSession()
+		a.refreshSessions()
+		a.left = leftSessions
+		a.statusMsg = ""
+		return a, nil
+	case "enter":
+		// Give focus to the detail pane.
+		selected := a.timeline.list.SelectedPrompt()
+		if selected != nil {
+			a.timeline.detail.HasFocus = true
+			// If the turn has agents, start with agent cursor on first.
+			if len(selected.Agents) > 0 {
+				a.timeline.detail.agentCursor = 0
+			}
+		}
+		return a, nil
+	}
+
+	prevCursor := a.timeline.list.Cursor
+	var cmd tea.Cmd
+	a.timeline, cmd = a.timeline.Update(msg)
+
+	// Reset detail state when prompt cursor changes.
+	if a.timeline.list.Cursor != prevCursor {
+		a.timeline.detail.ResetExpansion()
+	}
+
+	return a, cmd
+}
+
+// updateDetailFocused handles keys when the detail pane has focus.
+func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		a.cleanup()
+		return a, tea.Quit
+	case "esc":
+		// Layered dismissal: expanded → agent focus → return to left pane.
+		if a.timeline.detail.IsAgentExpanded() {
+			a.timeline.detail.CollapseAgent()
+			return a, nil
+		}
+		if a.timeline.detail.IsAgentFocused() {
+			a.timeline.detail.agentCursor = -1
+			return a, nil
+		}
+		// Return focus to the left pane (turns list).
+		a.timeline.detail.HasFocus = false
+		return a, nil
+	case "enter":
+		selected := a.timeline.list.SelectedPrompt()
+		if selected == nil {
+			return a, nil
+		}
+		if a.timeline.detail.IsAgentExpanded() {
+			ag := a.timeline.detail.resolveExpandedAgent(selected)
+			if ag != nil && len(ag.Children) > 0 && a.timeline.detail.IsAgentFocused() {
+				a.timeline.detail.ExpandAgent(ag.Children)
+			}
+		} else if a.timeline.detail.IsAgentFocused() {
+			a.timeline.detail.ExpandAgent(selected.Agents)
+		}
+		return a, nil
+	case "j", "down":
+		selected := a.timeline.list.SelectedPrompt()
+		if selected == nil {
+			return a, nil
+		}
+		if a.timeline.detail.IsAgentExpanded() {
+			ag := a.timeline.detail.resolveExpandedAgent(selected)
+			if ag != nil && len(ag.Children) > 0 {
+				a.timeline.detail.AgentCursorDown(len(ag.Children))
+			}
+		} else if len(selected.Agents) > 0 {
+			a.timeline.detail.AgentCursorDown(len(selected.Agents))
+		}
+		return a, nil
+	case "k", "up":
+		a.timeline.detail.AgentCursorUp()
+		return a, nil
+	case "h", "left":
+		a.timeline.detail.ScrollUp()
+		return a, nil
+	case "l", "right":
+		a.timeline.detail.ScrollDown()
+		return a, nil
+	}
+	return a, nil
+}
+
+// --- Watcher message handling ---
+
 func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case watcher.MsgNewEvents:
-		// If we're in a session view (live mode), do incremental rebuild.
-		// Only pass the new events to avoid unbounded accumulation.
-		if a.view == viewTimeline && a.session != nil {
+		if a.left == leftTurns && a.session != nil {
 			var branch string
 			var sealedIdxs []int
 			branch, sealedIdxs, a.agentCounter = parser.RebuildActivePrompt(
 				a.session, msg.Events, 0, a.cfg, a.liveToolCallsByID, a.lastBranch, a.agentCounter)
 			a.lastBranch = branch
 
-			// Notify agent watcher of new Agent tool_use/tool_result/progress events.
 			a.notifyAgentWatcher(msg.Events)
 
-			// Feed new events to the ticker.
 			tickerEntries := extractTickerEntries(msg.Events)
 			a.timeline.ticker.Push(tickerEntries)
 
-			// Update the timeline's session reference.
 			a.timeline.syncSession(a.session)
 
-			// Auto-follow on new sealed prompts.
 			if len(sealedIdxs) > 0 {
 				a.timeline.ticker.ResetForNewPrompt()
 				a.timeline.onPromptSealed()
 			}
 		} else {
-			// During loading: accumulate for initial BuildSession.
 			a.events = append(a.events, msg.Events...)
 		}
 
 	case watcher.MsgReplayDone:
-		// Initial replay complete — build the full session.
 		a.rebuildSession()
 		if a.session != nil {
-			// Initialize live state.
 			a.liveToolCallsByID = parser.BuildToolCallsByID(a.session)
 			a.agentCounter = parser.CountAgents(a.session)
 
-			// Extract last known git branch for incremental branch detection.
 			for i := len(a.events) - 1; i >= 0; i-- {
 				if a.events[i].GitBranch != "" {
 					a.lastBranch = a.events[i].GitBranch
 					break
 				}
 			}
-			// Free replay events — no longer needed after full build.
 			a.events = nil
 
-			// Determine IsLive: last prompt unsealed means session is likely still active.
 			if len(a.session.Prompts) > 0 {
 				last := a.session.Prompts[len(a.session.Prompts)-1]
 				a.session.IsLive = last.EndTime.IsZero()
@@ -272,14 +418,12 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 			a.timeline = newTimeline(a.session)
 			a.timeline.setSize(a.width, a.height)
 
-			// If live, enable auto-follow, start the tick, and start agent watcher.
 			if a.session.IsLive {
 				a.timeline.autoFollow = true
 				a.timeline.isLive = true
 				a.timeline.ticker = NewTicker(a.cfg.LoopDetectionThreshold)
 				a.timeline.followLatest()
 
-				// Start agent watcher for live subagent file tailing.
 				if a.session.FilePath != "" {
 					sessionDir := filepath.Dir(a.session.FilePath)
 					ch := make(chan interface{}, 256)
@@ -299,9 +443,8 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 				}
 			}
 		}
-		a.view = viewTimeline
+		a.left = leftTurns
 
-		// Start tick for live sessions — do NOT stop the watcher.
 		if a.session != nil && a.session.IsLive {
 			var cmds []tea.Cmd
 			cmds = append(cmds, tickCmd())
@@ -310,48 +453,35 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 			}
 			return tea.Batch(cmds...)
 		}
-		// For completed sessions, stop the watcher (no new data expected).
 		a.cleanup()
-
-	case watcher.MsgPromptSealed:
-		// During loading: used as progress indicator (M3 behavior).
-		// During live timeline: handled via MsgNewEvents + RebuildActivePrompt.
-
-	case watcher.MsgPromptUpdate:
-		// During live timeline: handled via MsgNewEvents.
 
 	case watcher.MsgSessionFileDeleted:
 		if a.session != nil {
 			a.session.IsLive = false
 		}
 		a.timeline.isLive = false
-		a.statusMsg = "Session file removed — press P for picker or q to quit"
+		a.statusMsg = "Session file removed"
 		a.cleanup()
 
 	case watcher.MsgWatcherError:
-		// Watcher failed to open the session file (deleted, permissions, etc.).
-		// Return to picker with a fresh session list.
 		a.resetSession()
-		a.refreshPicker()
-		a.view = viewPicker
+		a.refreshSessions()
+		a.left = leftSessions
 		a.statusMsg = "Session unavailable — list refreshed"
 	}
 	return nil
 }
 
-// handleAgentWatcherMsg processes a message from the agent watcher.
 func (a *App) handleAgentWatcherMsg(msg interface{}) tea.Cmd {
 	switch msg := msg.(type) {
 	case agent.MsgAgentToolCall:
 		if a.session == nil {
 			return nil
 		}
-		// Find the agent by toolUseID and append the tool call.
 		for _, prompt := range a.session.Prompts {
 			for _, ag := range prompt.Agents {
 				if ag.ToolUseID == msg.ToolUseID {
 					ag.ToolCalls = append(ag.ToolCalls, msg.ToolCall)
-					// Update FilesTouched.
 					if msg.ToolCall.Path != "" && agent.IsFilePath(msg.ToolCall.Type) {
 						found := false
 						for _, p := range ag.FilesTouched {
@@ -364,8 +494,6 @@ func (a *App) handleAgentWatcherMsg(msg interface{}) tea.Cmd {
 							ag.FilesTouched = append(ag.FilesTouched, msg.ToolCall.Path)
 						}
 					}
-					// Live conflict detection: check if a write/edit touches
-					// a file another active parallel agent also touched.
 					if msg.ToolCall.Path != "" && agent.IsFilePath(msg.ToolCall.Type) {
 						a.checkLiveConflict(prompt, ag, msg.ToolCall.Path)
 					}
@@ -374,19 +502,12 @@ func (a *App) handleAgentWatcherMsg(msg interface{}) tea.Cmd {
 				}
 			}
 		}
-
 	case agent.MsgAgentFileFound:
-		// Agent file appeared — no UI action needed, tailing starts automatically.
-
 	case agent.MsgAgentFileMissing:
-		// Agent completed but file was never found. Already handled by
-		// the tree builder's enrichment on tool_result.
 	}
 	return nil
 }
 
-// checkLiveConflict checks if a file touched by one agent is also touched by
-// another active parallel agent in the same prompt. Adds WarnAgentConflict if so.
 func (a *App) checkLiveConflict(prompt *model.Prompt, currentAgent *model.AgentNode, path string) {
 	if len(prompt.Agents) < 2 {
 		return
@@ -400,12 +521,11 @@ func (a *App) checkLiveConflict(prompt *model.Prompt, currentAgent *model.AgentN
 		}
 		for _, otherPath := range other.FilesTouched {
 			if otherPath == path {
-				// Check if this conflict is already warned.
 				msg := fmt.Sprintf("file conflict: %s touched by %s, %s",
 					path, currentAgent.Label, other.Label)
 				for _, w := range prompt.Warnings {
 					if w.Type == model.WarnAgentConflict && w.Message == msg {
-						return // Already warned.
+						return
 					}
 				}
 				prompt.Warnings = append(prompt.Warnings, model.Warning{
@@ -418,12 +538,6 @@ func (a *App) checkLiveConflict(prompt *model.Prompt, currentAgent *model.AgentN
 	}
 }
 
-// notifyAgentWatcher checks new events for Agent tool_use, tool_result, and
-// progress lines, and notifies the agent watcher to start/stop tailing.
-//
-// The agentID is not available at tool_use time (only on tool_result or progress
-// lines). For agents that emit progress lines, we start tailing early. For agents
-// without progress lines, we enrich from the subagent file when tool_result arrives.
 func (a *App) notifyAgentWatcher(events []*parser.RawEvent) {
 	if a.agentWatcher == nil {
 		return
@@ -442,15 +556,9 @@ func (a *App) notifyAgentWatcher(events []*parser.RawEvent) {
 				if !ok || tc.Type != model.ToolAgent {
 					continue
 				}
-				// Agent completed — stop tailing.
 				a.agentWatcher.StopAgent(block.ToolResultID)
-
-				// Enrich the agent from its subagent file. This catches agents
-				// that had no progress lines (never got WatchAgent called) and
-				// ensures complete data even for agents that were tailed live.
 				a.enrichCompletedAgent(block.ToolResultID)
 			}
-
 		case "progress":
 			if evt.ProgressData == nil || evt.ProgressData.Type != "agent_progress" {
 				continue
@@ -464,10 +572,6 @@ func (a *App) notifyAgentWatcher(events []*parser.RawEvent) {
 	}
 }
 
-// enrichCompletedAgent reads the subagent file to populate the agent's full data
-// after it completes. This is needed because: (1) live tailing only captures
-// tool_use blocks, not result pairing or token counts, and (2) agents without
-// progress lines were never tailed at all.
 func (a *App) enrichCompletedAgent(toolUseID string) {
 	if a.session == nil || a.session.FilePath == "" {
 		return
@@ -479,7 +583,6 @@ func (a *App) enrichCompletedAgent(toolUseID string) {
 			}
 			sessionDir := filepath.Dir(a.session.FilePath)
 			path := agent.SubagentFilePath(sessionDir, a.session.ID, ag.ID)
-			// Clear live-tailed tool calls — the full parse is authoritative.
 			ag.ToolCalls = nil
 			ag.FilesTouched = nil
 			ag.TokensIn = 0
@@ -493,8 +596,8 @@ func (a *App) enrichCompletedAgent(toolUseID string) {
 	}
 }
 
-// extractTickerEntries pulls TickerEntry values from new raw events.
-// Extracts tool_use blocks from assistant messages and from progress lines.
+// --- Helpers ---
+
 func extractTickerEntries(events []*parser.RawEvent) []TickerEntry {
 	var entries []TickerEntry
 	for _, evt := range events {
@@ -509,7 +612,6 @@ func extractTickerEntries(events []*parser.RawEvent) []TickerEntry {
 				}
 				entries = append(entries, tickerEntryFromBlock(block, evt.Timestamp, ""))
 			}
-
 		case "progress":
 			if evt.ProgressData == nil || evt.ProgressData.Type != "agent_progress" {
 				continue
@@ -523,7 +625,6 @@ func extractTickerEntries(events []*parser.RawEvent) []TickerEntry {
 	return entries
 }
 
-// tickerEntryFromBlock creates a TickerEntry from a parsed content block.
 func tickerEntryFromBlock(block parser.ContentBlock, ts time.Time, agentID string) TickerEntry {
 	toolType, _, _ := parser.ClassifyToolName(block.ToolName)
 	return TickerEntry{
@@ -534,12 +635,10 @@ func tickerEntryFromBlock(block parser.ContentBlock, ts time.Time, agentID strin
 	}
 }
 
-// extractToolPath extracts the most useful display path from a tool_use input.
 func extractToolPath(block parser.ContentBlock) string {
 	if len(block.ToolInput) == 0 {
 		return ""
 	}
-	// Try common path fields.
 	type pathInput struct {
 		FilePath string `json:"file_path"`
 		Pattern  string `json:"pattern"`
@@ -554,7 +653,6 @@ func extractToolPath(block parser.ContentBlock) string {
 			return pi.Pattern
 		}
 		if pi.Command != "" {
-			// Truncate long commands for display.
 			if len(pi.Command) > 50 {
 				return pi.Command[:50] + "..."
 			}
@@ -569,7 +667,6 @@ func (a *App) rebuildSession() {
 		return
 	}
 	a.session = parser.BuildSession(a.events, a.cfg)
-	// Propagate project info from meta if available.
 	if a.sessionMeta != nil {
 		if a.session.ProjectName == "" {
 			a.session.ProjectName = a.sessionMeta.ProjectName
@@ -579,181 +676,23 @@ func (a *App) rebuildSession() {
 		}
 		a.session.FilePath = a.sessionMeta.FilePath
 	}
-
-	// Enrich agent nodes from subagent JSONL files.
 	if a.session.FilePath != "" {
 		sessionDir := filepath.Dir(a.session.FilePath)
 		agent.EnrichSession(a.session, sessionDir, a.cfg)
 	}
 }
 
-func (a App) updatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if a.picker.filtering {
-		var cmd tea.Cmd
-		a.picker, cmd = a.picker.Update(msg)
-		return a, cmd
-	}
-
-	switch msg.String() {
-	case "enter":
-		sel := a.picker.selectedSession()
-		if sel != nil {
-			a.resetSession()
-			a.sessionMeta = sel
-			a.view = viewLoading
-			a.statusMsg = ""
-			return a, a.startWatcher(sel.FilePath)
-		}
-		return a, nil
-	case "q":
-		a.cleanup()
-		return a, tea.Quit
-	}
-
-	var cmd tea.Cmd
-	a.picker, cmd = a.picker.Update(msg)
-	return a, cmd
-}
-
-func (a App) updateLoading(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q":
-		a.cleanup()
-		return a, tea.Quit
-	case "P", "esc":
-		a.resetSession()
-		a.refreshPicker()
-		a.view = viewPicker
-		return a, nil
-	}
-	return a, nil
-}
-
-func (a App) updateTimeline(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// If the timeline is filtering, let it handle all keys.
-	if a.timeline.filtering {
-		var cmd tea.Cmd
-		a.timeline, cmd = a.timeline.Update(msg)
-		return a, cmd
-	}
-
-	switch msg.String() {
-	case "q":
-		a.cleanup()
-		return a, tea.Quit
-	case "P":
-		a.resetSession()
-		a.refreshPicker()
-		a.view = viewPicker
-		a.statusMsg = ""
-		return a, nil
-	case "enter":
-		selected := a.timeline.list.SelectedPrompt()
-		if selected == nil {
-			return a, nil
-		}
-		if a.timeline.detail.IsAgentExpanded() {
-			// Inside expanded agent — drill into nested agent if focused.
-			ag := a.timeline.detail.resolveExpandedAgent(selected)
-			if ag != nil && len(ag.Children) > 0 && a.timeline.detail.IsAgentFocused() {
-				a.timeline.detail.ExpandAgent(ag.Children)
-			}
-		} else if a.timeline.detail.IsAgentFocused() {
-			// Agent focused at prompt level — expand it.
-			a.timeline.detail.ExpandAgent(selected.Agents)
-		} else if len(selected.Agents) > 0 {
-			// No agent focused — enter agent focus mode, cursor on first.
-			a.timeline.detail.agentCursor = 0
-		}
-		return a, nil
-	case "esc":
-		// Layered dismissal: expanded → agent focus → filter → picker.
-		if a.timeline.detail.IsAgentExpanded() {
-			a.timeline.detail.CollapseAgent()
-			return a, nil
-		}
-		if a.timeline.detail.IsAgentFocused() {
-			a.timeline.detail.agentCursor = -1
-			return a, nil
-		}
-		if a.timeline.filter != "" {
-			a.timeline.filter = ""
-			a.timeline.filteredIdxs = nil
-			a.timeline.restoreFullList()
-			return a, nil
-		}
-		a.resetSession()
-		a.refreshPicker()
-		a.view = viewPicker
-		a.statusMsg = ""
-		return a, nil
-	case "j", "down":
-		// When agent focused/expanded, j/k navigate agents, not prompts.
-		if a.timeline.detail.IsAgentFocused() || a.timeline.detail.IsAgentExpanded() {
-			selected := a.timeline.list.SelectedPrompt()
-			if selected == nil {
-				return a, nil
-			}
-			if a.timeline.detail.IsAgentExpanded() {
-				ag := a.timeline.detail.resolveExpandedAgent(selected)
-				if ag != nil && len(ag.Children) > 0 {
-					a.timeline.detail.AgentCursorDown(len(ag.Children))
-				}
-			} else {
-				a.timeline.detail.AgentCursorDown(len(selected.Agents))
-			}
-			return a, nil
-		}
-		// Fall through to normal prompt navigation.
-	case "k", "up":
-		if a.timeline.detail.IsAgentFocused() || a.timeline.detail.IsAgentExpanded() {
-			a.timeline.detail.AgentCursorUp()
-			return a, nil
-		}
-	case "tab":
-		// Tab also cycles agents (same as j when focused).
-		selected := a.timeline.list.SelectedPrompt()
-		if selected == nil {
-			return a, nil
-		}
-		if a.timeline.detail.IsAgentExpanded() {
-			ag := a.timeline.detail.resolveExpandedAgent(selected)
-			if ag != nil && len(ag.Children) > 0 {
-				a.timeline.detail.AgentCursorDown(len(ag.Children))
-			}
-		} else if len(selected.Agents) > 0 {
-			a.timeline.detail.AgentCursorDown(len(selected.Agents))
-		}
-		return a, nil
-	case "shift+tab":
-		a.timeline.detail.AgentCursorUp()
-		return a, nil
-	}
-
-	prevCursor := a.timeline.list.Cursor
-	var cmd tea.Cmd
-	a.timeline, cmd = a.timeline.Update(msg)
-
-	// Reset agent expansion when prompt cursor changes.
-	if a.timeline.list.Cursor != prevCursor {
-		a.timeline.detail.ResetExpansion()
-	}
-
-	return a, cmd
-}
-
-// cleanup stops the watcher and agent watcher if running. Safe to call multiple times.
 func (a *App) cleanup() {
 	if a.agentWatcher != nil {
 		a.agentWatcher.Stop()
 		a.agentWatcher = nil
 	}
 	if a.agentWatcherDone != nil {
-		close(a.agentWatcherDone) // unblocks send callback
+		close(a.agentWatcherDone)
 		a.agentWatcherDone = nil
 	}
 	if a.agentWatcherSendCh != nil {
-		close(a.agentWatcherSendCh) // unblocks waitForAgentWatcher
+		close(a.agentWatcherSendCh)
 		a.agentWatcherSendCh = nil
 		a.agentWatcherCh = nil
 	}
@@ -763,7 +702,6 @@ func (a *App) cleanup() {
 	}
 }
 
-// resetSession clears all session state for navigating to a new session.
 func (a *App) resetSession() {
 	a.cleanup()
 	a.events = nil
@@ -773,34 +711,36 @@ func (a *App) resetSession() {
 	a.agentCounter = 0
 }
 
-// refreshPicker rescans the filesystem and rebuilds the picker session list.
-// Always rescans — stale session lists cause lockouts when files are deleted.
-func (a *App) refreshPicker() {
+func (a *App) refreshSessions() {
 	sessions, _ := discovery.ScanAll()
 	if a.cfg != nil && len(sessions) > a.cfg.MaxPickerSessions {
 		sessions = sessions[:a.cfg.MaxPickerSessions]
 	}
-	a.allSessions = sessions
-	a.picker = newPicker(sessions)
-	a.picker.width = a.width
-	a.picker.height = a.height
+	a.sessions = newSessionList(sessions)
+	a.sessions.setSize(a.width, a.height)
 }
 
+// --- View ---
+
 func (a App) View() string {
-	switch a.view {
-	case viewPicker:
-		v := a.picker.View()
-		if a.statusMsg != "" {
-			v += "\n" + MutedStyle.Render("  "+a.statusMsg)
-		}
-		return v
-	case viewLoading:
+	switch a.left {
+	case leftSessions:
+		return a.viewSessions()
+	case leftLoading:
 		return a.viewLoading()
-	case viewTimeline:
+	case leftTurns:
 		return a.timeline.View()
 	default:
 		return ""
 	}
+}
+
+func (a App) viewSessions() string {
+	v := a.sessions.View()
+	if a.statusMsg != "" {
+		v += "\n" + MutedStyle.Render("  "+a.statusMsg)
+	}
+	return v
 }
 
 func (a App) viewLoading() string {
@@ -823,7 +763,7 @@ func (a App) viewLoading() string {
 
 	b.WriteString("\n")
 	b.WriteString(StatusBarStyle.Render(
-		KeyStyle.Render("P") + " " + KeyDescStyle.Render("picker") + "  " +
+		KeyStyle.Render("esc") + " " + KeyDescStyle.Render("back") + "  " +
 			KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")))
 
 	return b.String()

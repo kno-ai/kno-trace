@@ -58,10 +58,10 @@ func (t *timelineModel) setSize(w, h int) {
 	listWidth := max(15, w*t.splitPct/100)
 	detailWidth := max(1, w-listWidth-3) // 3 for divider + padding
 
-	// Reserve lines for bottom: stats bar + padding + ticker (when live).
-	reserved := 3
+	// Reserve lines: breadcrumb + stats bar + padding + ticker (when live).
+	reserved := 4 // breadcrumb + stats + padding
 	if t.isLive {
-		reserved = 4 // extra line for ticker strip
+		reserved = 5 // extra line for ticker strip
 	}
 	contentHeight := max(1, h-reserved)
 
@@ -253,6 +253,12 @@ func (t timelineModel) View() string {
 		return EmptyStateStyle.Render("No prompts in session")
 	}
 
+	// Breadcrumb.
+	breadcrumb := TitleStyle.Render("kno-trace")
+	if t.session.ProjectName != "" {
+		breadcrumb += MutedStyle.Render(" > ") + SelectedStyle.Render(t.session.ProjectName)
+	}
+
 	// Left pane: prompt list.
 	leftContent := t.list.View()
 
@@ -266,7 +272,7 @@ func (t timelineModel) View() string {
 			DimStyle.Render("esc to clear") + "\n"
 	}
 
-	leftPane := filterBar + leftContent
+	leftPane := breadcrumb + "\n" + filterBar + leftContent
 
 	// Right pane: detail for selected prompt.
 	selected := t.list.SelectedPrompt()
@@ -379,13 +385,21 @@ func (t timelineModel) statsBar() string {
 		}
 	}
 
-	// Key hints.
-	keys := KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("nav") + "  " +
-		KeyStyle.Render("enter") + " " + KeyDescStyle.Render("expand") + "  " +
-		KeyStyle.Render("[/]") + " " + KeyDescStyle.Render("resize") + "  " +
-		KeyStyle.Render("/") + " " + KeyDescStyle.Render("filter") + "  " +
-		KeyStyle.Render("P") + " " + KeyDescStyle.Render("picker") + "  " +
-		KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")
+	// Key hints — context-appropriate based on focus.
+	var keys string
+	if t.detail.HasFocus {
+		keys = KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("items") + "  " +
+			KeyStyle.Render("enter") + " " + KeyDescStyle.Render("drill in") + "  " +
+			KeyStyle.Render("esc") + " " + KeyDescStyle.Render("back") + "  " +
+			KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")
+	} else {
+		keys = KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("turns") + "  " +
+			KeyStyle.Render("enter") + " " + KeyDescStyle.Render("detail") + "  " +
+			KeyStyle.Render("[/]") + " " + KeyDescStyle.Render("resize") + "  " +
+			KeyStyle.Render("/") + " " + KeyDescStyle.Render("filter") + "  " +
+			KeyStyle.Render("esc") + " " + KeyDescStyle.Render("sessions") + "  " +
+			KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")
+	}
 
 	return StatusBarStyle.Render(strings.Join(parts, "  ·  ") + "    " + keys)
 }
