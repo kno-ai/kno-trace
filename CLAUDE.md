@@ -149,7 +149,7 @@ Hard-won knowledge from building each milestone. Read before starting a new mile
 
 ### M5: Agent Tree & Detail Pane (Layers 3-4)
 
-- **Swimlane was removed.** The timeline's split-pane layout (prompts left, detail right) with agent expansion serves the same purpose. The swimlane added layout complexity without new information — the detail pane already shows agent lanes, tool calls, and live updates. Auto-follow to the latest prompt makes the timeline a live dashboard.
+- **Swimlane was removed.** Separate views don't add value. The two-pane layout (list left, detail right) with hierarchical drill-down is the only UI model. See `spec/ui-model.md` for the full design. M6 implements this: Sessions → Turns → Items → Agent Items, all with the same j/k/enter/esc navigation.
 - **Detail pane `agentCursor` must be initialized to -1.** Go's zero value for int is 0, which means "first agent focused." Use `Detail{agentCursor: -1}` everywhere a Detail is created. `ResetExpansion` also sets it to -1.
 - **Stale expansion paths auto-recover.** If the expanded agent's ToolUseID no longer exists (session rebuilt, agent removed), `resolveExpandedAgent` returns nil and the View falls through to the prompt-level rendering. No crash, no stale UI.
 - **Live conflict detection is incremental.** `checkLiveConflict` runs on each `MsgAgentToolCall` and checks if the file is already in another active agent's `FilesTouched`. Avoids re-running full `detectFileConflicts` on every tool call.

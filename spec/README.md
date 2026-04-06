@@ -797,14 +797,13 @@ Each milestone builds progressively toward the control room vision:
 | M0 | Schema Investigation | Ground truth — confirm what the JSONL gives us | [m0-schema.md](milestones/m0-schema.md) |
 | M1 | Session Picker | Front door — find and open a session, see the summary card | [m1-session-picker.md](milestones/m1-session-picker.md) |
 | M2 | Parser, Builder & Live Tail | Data pipeline — JSONL becomes structured data, live streaming works | [m2-parser.md](milestones/m2-parser.md) |
-| M3 | Static Timeline | **Core layout** — navigable timeline with badges, search, detail pane | [m3-static-timeline.md](milestones/m3-static-timeline.md) |
-| M4 | Live Timeline & Ticker | **Control room comes alive** — real-time updates, ticker, loop detection, auto-follow | [m4-live-timeline.md](milestones/m4-live-timeline.md) |
-| M5 | Agent Data Layer | ✅ Agent tree builder, live subagent tailing, enrichment — data ready | [m5-agents.md](milestones/m5-agents.md) |
-| M6 | Rich Detail Pane | **The value milestone** — inline diffs, file intelligence, live agent activity, drill-in everywhere | [m6-heatmap.md](milestones/m6-heatmap.md) |
-| M7 | Session-Scoped Diff | Before/after comparison — what changed between any two prompts | [m7-diff.md](milestones/m7-diff.md) |
-| M8 | Release Polish & Distribution | Ship it — `brew install kno-trace`, README with control room pitch | [m8-release.md](milestones/m8-release.md) |
+| M3 | Static Timeline | Core layout — navigable timeline with badges, search, detail pane | [m3-static-timeline.md](milestones/m3-static-timeline.md) |
+| M4 | Live Timeline & Ticker | Real-time updates, ticker, loop detection, auto-follow | [m4-live-timeline.md](milestones/m4-live-timeline.md) |
+| M5 | Agent Data Layer | ✅ Tree builder, live subagent tailing, enrichment | [m5-agents.md](milestones/m5-agents.md) |
+| M6 | Unified Navigation & Rich Detail | **The value milestone** — hierarchical drill-down, inline diffs, file intelligence, selection/comparison, live agent activity | [m6-heatmap.md](milestones/m6-heatmap.md) |
+| M7 | Release Polish & Distribution | Ship it — sparkline, help overlay, `brew install kno-trace` | [m7-diff.md](milestones/m7-diff.md) |
 
-**The control room is usable at M3.** By M4 it's a daily driver for live sessions. M5 built the agent data layer. **M6 is where kno-trace becomes genuinely useful** — inline diffs, file churn, live agent activity. This is the milestone that makes a developer want to keep it open. M7-M8 add analytical depth and polish.
+**The control room is usable at M4.** M5 built the agent data plumbing. **M6 is where kno-trace becomes genuinely useful** — the UI shifts from "same as Claude Code output" to "control room I want open." It implements the unified hierarchical navigation model (see [ui-model.md](ui-model.md)), inline diffs, file churn, and selection/comparison — all in the same two-pane layout. M7 polishes and ships.
 
 ---
 
@@ -848,24 +847,19 @@ Two assets that communicate the "control room" vision:
 
 ## Reference: Full Keybindings
 
-Follows vim/TUI conventions (j/k, g/G, /, ?, esc). Consistent with lazygit, k9s, and similar tools that Claude Code users are likely familiar with.
+Follows vim/TUI conventions (j/k, g/G, /, ?, esc). Consistent with lazygit, k9s, and similar tools that Claude Code users are likely familiar with. The same keys work at every level of the hierarchy.
 
-| Key | Context | Action |
+| Key | Action | Notes |
 |---|---|---|
-| `j` / `down` | All list views | Navigate down |
-| `k` / `up` | All list views | Navigate up |
-| `g` | All list views | Jump to top |
-| `G` | All list views | Jump to bottom |
-| `enter` | All list views | Expand/select; drill into agent node |
-| `esc` | Anywhere | Back / collapse / clear marks / dismiss overlay |
-| `/` | Timeline, Heatmap, Swimlane | Search/filter (prompts by text/file/tool; files by path; agents by label/file) |
-| `?` | Anywhere | Toggle help overlay |
-| `q` | Anywhere | Quit cleanly, no confirmation |
-| `P` | Any session view | Return to session picker |
-| `t` | Any session view | Switch to timeline view |
-| `s` | Any session view | Switch to swimlane view |
-| `h` | Any session view | Switch to heatmap view |
-| `d` | Any session view | Switch to diff view |
-| `m` | Timeline | Mark prompt for diff (`[A]` first, `[B]` second opens diff) |
-| `f` | Heatmap | Open file history for selected file |
-| `tab` | Views with sub-tabs | Cycle sub-tabs |
+| `j` / `↓` | Navigate down | Moves within the current level's list |
+| `k` / `↑` | Navigate up | |
+| `g` | Jump to top | Also re-engages auto-follow at turns level |
+| `G` | Jump to bottom | Also re-engages auto-follow at turns level |
+| `enter` | Drill into focused item | Pushes a new level onto the navigation stack |
+| `esc` | Back up one level | At sessions level = quit. Also clears search/filter. |
+| `space` | Toggle selection | Marks items for comparison. Status bar shows count. |
+| `c` | Compare selected | Opens comparison view in detail pane for marked items |
+| `/` | Search/filter | Filters the current list. Enter keeps filter, esc clears. |
+| `[` / `]` | Resize panes | Adjusts left/right split, 5% increments |
+| `?` | Help overlay | Shows keybindings for the current level |
+| `q` | Quit | Always quits, from any level, no confirmation |

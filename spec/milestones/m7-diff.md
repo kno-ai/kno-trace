@@ -1,36 +1,42 @@
-# M7: Session-Scoped Diff
+# M7: Release Polish & Distribution
 
-**Prerequisites:** M6 complete (replay engine, inline diffs, file history working).
+**Prerequisites:** M6 complete (unified navigation, replay engine, inline diffs, selection/comparison all working).
 
-**Goal:** "What changed between then and now?" — full codebase diff between any two prompts.
+**Goal:** Ship the control room. v1.0.0 — `brew install kno-trace` works.
 
-**Deliverable:** Two-keystroke comparison of all file states between any two points in the session.
+**Deliverable:** Public release with working install instructions and polished experience.
 
-**Use cases served:** UC3 (what changed between then and now?)
+**Use cases served:** All — this milestone polishes the experience.
 
 ---
 
 ## Scope
 
-- `m` mark workflow in the timeline:
-  - `m` on prompt P: marks P as `[A]`, badge visible in prompt list
-  - `m` on a different prompt Q: marks Q as `[B]`, opens diff in detail pane
-  - `m` on the same prompt as `[A]`: clears the mark (toggle)
-  - `esc` clears marks
-- Diff renders in the detail pane (not a separate view):
-  - Uses `replay.GetContentAt(path, fromIdx)` and `GetContentAt(path, toIdx)`
-  - Lists all files changed between the two prompts (including agent modifications)
-  - Per-file unified diff with add/del/context coloring
-  - Summary: `+N -M across K files`
-  - Bash presence note when applicable
-  - Enter on a file → full diff for that file. Esc back to summary.
+- Context pressure:
+  - Sparkline in status bar showing context% trajectory across turns
+  - Nudge when context exceeds threshold (configurable)
+  - Compact markers visible in sparkline
+- Polish:
+  - Terminal resize propagation at all navigation levels
+  - Empty states with clear messages at every level
+  - Corrupt JSONL: error message with path, no crash
+  - `?` help overlay showing keybindings for the current level
+  - `NO_COLOR=1` support: readable without colors
+  - Search/filter (`/`) works at every list level
+- Distribution:
+  - `.goreleaser.yaml`: darwin/amd64, darwin/arm64, linux/amd64, linux/arm64, windows/amd64
+  - `.github/workflows/release.yaml`: trigger on `git tag v*`
+  - Homebrew tap formula
+  - README with hero GIF, install instructions, quick start, keybindings
 
 ---
 
 ## Acceptance Criteria
 
-- Diff correct between any two prompts (including agent changes)
-- `[A]`/`[B]` badges visible in prompt list
-- Mark workflow predictable (toggle, clear on esc)
-- Files with no baseline show clear message
-- Bash presence note when relevant
+- `goreleaser build --snapshot --clean` produces all targets
+- `brew install` works on macOS
+- Context sparkline renders correctly with ≥3 data points
+- Help overlay shows correct keys for current navigation level
+- All empty states graceful (no sessions, empty session, turn with no tool calls)
+- `NO_COLOR=1` readable output
+- Search works at sessions, turns, and items levels
