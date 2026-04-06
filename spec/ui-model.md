@@ -1,198 +1,224 @@
-# UI Model: Hierarchical Drill-Down
+# UI Model: Stable List, Deep Detail
 
-This document defines the unified interaction model for kno-trace. All navigation follows the same pattern at every level. There are no separate "views" — only depth in a tree.
+This document defines the interaction model for kno-trace. The left pane is a stable navigational anchor. The right pane is the drill-down space.
 
 ---
 
 ## Core Principles
 
-1. **One interaction model everywhere.** j/k to navigate, enter to drill in, esc to back out. No exceptions. No special keys for special contexts.
+1. **Left pane = stable list. Right pane = drill-down detail.** The left pane shows the primary list for the current context (sessions or turns). It doesn't change on enter — it's always there as an anchor. The right pane handles all depth: tool calls, diffs, agents, file history.
 
-2. **Two panes, always.** Left pane = list of items at the current level. Right pane = detail for the focused item. Breadcrumb at top of the right pane shows where you are.
+2. **One interaction model in the detail pane.** j/k to navigate items within the detail, enter to drill deeper, esc to back out. Breadcrumb at the top shows where you are.
 
-3. **Live and historical are the same UI.** Live sessions auto-follow (cursor tracks the latest item, detail auto-scrolls). Manual navigation disengages auto-follow. New data streams into the same layout — no mode switch, no different rendering.
+3. **Two left-pane contexts.** Sessions list (top level) and turns list (inside a session). Enter on a session switches the left pane to turns. Esc from turns switches back to sessions. This is the only left-pane transition — like opening a folder.
 
-4. **Selection enables comparison.** Spacebar marks items. A dedicated key opens the comparison view for marked items. The detail pane shifts from "single item detail" to "comparison across marked items."
+4. **Live and historical are the same UI.** Auto-follow keeps you on the latest turn with detail scrolled to the bottom. New data streams in. Manual navigation disengages auto-follow. No mode switch.
 
-5. **The detail pane shows what matters without drilling in.** Diffs inline, file churn visible, agent activity visible. Drilling in adds depth, but the summary is useful at a glance.
+5. **Selection enables comparison.** Spacebar marks items in the left pane. A dedicated key opens the comparison view in the detail pane.
+
+6. **The detail pane shows what matters at a glance.** Diffs inline, file churn visible, agent activity visible. Drilling in adds depth, but the summary is useful without interaction.
 
 ---
 
-## The Hierarchy
+## Layout
 
 ```
-Sessions                              ← left pane: list of sessions
-  └── Session                         ← left pane: list of turns (prompts)
-       └── Turn                       ← left pane: list of items in this turn
-            ├── Tool Call (Edit)      ← detail: inline diff
-            ├── Tool Call (Bash)      ← detail: command + output
-            ├── Tool Call (Read)      ← detail: file path, content excerpt
-            ├── Tool Call (Glob/Grep) ← detail: pattern, results
-            ├── ⬡ Agent              ← enter drills in → agent's items
-            │    ├── Tool Call        ← same as parent tool calls
-            │    └── ⬡ Nested Agent  ← enter drills deeper
-            └── [Files summary]       ← summary of all files touched in turn
+┌─────────────────────┬────────────────────────────────────────┐
+│                     │ Breadcrumb: #14 > subagent-1           │
+│   Left Pane         │                                        │
+│   (stable list)     │   Right Pane (detail / drill-down)     │
+│                     │                                        │
+│   Sessions          │   Content changes based on:            │
+│     or              │   - What's focused in the left pane    │
+│   Turns             │   - How deep you've drilled in         │
+│                     │                                        │
+│                     │                                        │
+├─────────────────────┴────────────────────────────────────────┤
+│ status bar: keys, stats, selection count                     │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-### Level 1: Sessions
+---
 
-The left pane shows all discovered sessions as a flat list (most recent first). Each row shows: project name, start time, duration, size. Same j/k/enter/esc navigation as every other level.
+## Left Pane States
 
-The right pane shows the session summary card: project name, model, duration, prompt count, token totals, context%, file count.
+### Sessions List
 
-Esc from this level = quit.
+The first thing you see. Flat list of all discovered sessions, most recent first. Each row: project name, start time, duration, size. j/k to navigate, enter to open a session (switches left pane to turns), esc to quit.
 
-### Level 2: Turns (Prompts)
+Style matches the turns list — same row format, same navigation, same visual weight.
 
-The left pane shows all prompts in the session. Each row shows: index, truncated human text, badges (tool count, agent count, context%, warnings). Breadcrumb: `Sessions > project-name`.
+### Turns List
 
-The right pane shows the turn detail: header (time, duration, model, tokens), human text, warnings, then a **rendered summary** of the turn's activity — tool calls with inline diffs for Edits, agent summaries with latest tool call, file activity section at the bottom.
+After entering a session. Shows all prompts with badges (tool count, agent count, context%, warnings). j/k to navigate turns. The right pane shows detail for the focused turn. Esc goes back to sessions list.
 
-### Level 3: Turn Items
+This list is **stable** — it never changes based on what you do in the detail pane. It's always there as your navigational anchor. You always know which turn you're looking at.
 
-Enter on a turn drills into its items. The left pane becomes a flat list of:
-- Tool calls (type icon + path/command)
-- Agents (⬡ label + status)
+---
 
-Each item shows a one-line summary. The right pane shows full detail for the focused item:
-- **Edit**: the diff (old → new), colored
-- **Write**: path, line count, content excerpt or diff against prior state
-- **Bash**: full command, exit code, output (truncated)
-- **Read**: path, content excerpt
-- **Glob/Grep**: pattern, result count
-- **Agent**: task description, model, status, duration, tokens, files touched with W/R/E counts, tool call count
+## Right Pane: The Detail Stack
 
-Breadcrumb: `Sessions > project-name > #14`
+The right pane shows detail for whatever's focused in the left pane. Within the detail, you can drill deeper using enter/esc. The breadcrumb at the top shows your current depth.
 
-### Level 4: Agent Items
+### Level 0: Session Summary (when sessions list is showing)
 
-Enter on an agent drills into its items — same layout as Level 3 but scoped to that agent's tool calls. Breadcrumb: `Sessions > project-name > #14 > subagent-1`
+The right pane shows a summary card for the focused session:
+- Project name, model, start/end time, duration
+- Prompt count, total tokens, file count
+- Context% of most recent prompt
+- Agent summary: total spawned, parallel, failures
 
-Nested agents appear in the list and can be drilled into further.
+### Level 1: Turn Detail (default when inside a session)
+
+The most important view — what you see most. Shows everything about the focused turn at a glance:
+
+**Header**: index, time range, duration, model, tokens in/out, context%
+
+**Human text**: the user's prompt
+
+**Warnings**: loop detected, context high/critical, agent conflicts, interrupted
+
+**Tool calls** (scrollable within the detail pane):
+- Edit: path + inline colored diff (3-4 lines, `... N more` if longer)
+- Write: path + `+N lines` or `+N -M` delta
+- Bash: truncated command, exit code if non-zero
+- Read/Glob/Grep: path or pattern (dimmed — low signal)
+- Agent: collapsed summary line (see below)
+
+**Agent summaries** (within the tool call list, at their chronological position):
+- Running: `⬡ subagent-1 (Explore) — running 14s → Edit app.go`
+- Succeeded: `⬡ subagent-1 (Explore) — done 25s — 4 files, 2 edits`
+- Failed: `⬡ subagent-1 — ✗ failed 5s`
+
+**File activity** (bottom section):
+- All files touched in this turn (parent + agents), sorted by session-wide heat
+- Per file: path, op badges (W×N R×M E×K), agent attribution
+- Conflict warnings for files touched by multiple agents
+
+Items in the detail pane are navigable: j/k moves between items (tool calls, agents, files) when the detail has focus. Enter drills into the focused item. The detail pane switches between "browsing the turn summary" and "drilled into an item."
+
+### Level 2: Drilled-In Views (enter on an item)
+
+Breadcrumb updates: `#14 > Edit app.go` or `#14 > subagent-1`
+
+**Enter on Edit tool call** → full diff with context lines, colored add/del. Scrollable.
+
+**Enter on Write tool call** → full content, or diff against prior state if available.
+
+**Enter on Bash tool call** → full command, exit code, full output (scrollable).
+
+**Enter on Agent** → agent detail:
+- Task description, task prompt text
+- Model, status, duration, tokens in/out
+- Files touched with per-file W/R/E counts
+- Tool call list (same rendering as turn-level tool calls, including inline diffs for Edits)
+- Nested agents listed at the bottom
+
+**Enter on a file** (from the file activity section) → file history:
+- Complete chronological list of all operations on this file across the entire session
+- Per entry: turn index, op type, agent label (if from agent), delta, mini-diff for Edits
+- Scrollable
+
+### Level 3: Deeper Drill-In
+
+**Enter on a tool call within an agent** → same as Level 2 tool call detail.
+
+**Enter on a nested agent** → same as Level 2 agent detail, breadcrumb extends.
+
+Esc always pops one level. The breadcrumb shortens. You land back where you were.
 
 ---
 
 ## Navigation
 
-| Key | Action | Notes |
-|-----|--------|-------|
-| `j` / `↓` | Move down in list | Always moves within the current level's list |
-| `k` / `↑` | Move up in list | |
-| `g` | Jump to top of list | |
-| `G` | Jump to bottom of list | |
-| `enter` | Drill into focused item | Pushes a new level onto the navigation stack |
-| `esc` | Back up one level | Pops the navigation stack. At sessions level = quit |
-| `space` | Toggle selection on focused item | Marked items shown with a selection indicator |
-| `c` | Compare selected items | Opens comparison view in detail pane |
-| `/` | Search/filter current list | Filters by text content, file path, tool type |
-| `[` / `]` | Resize left/right panes | 5% increments, clamped 15-85% |
-| `?` | Help overlay | Shows keybindings for current context |
-| `q` | Quit | Always quits, from any level |
+### Left Pane Keys (always active)
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move down in list |
+| `k` / `↑` | Move up in list |
+| `g` | Jump to top (re-engage auto-follow at turns level) |
+| `G` | Jump to bottom (re-engage auto-follow at turns level) |
+| `enter` | Sessions: open session. Turns: give focus to detail pane for drill-in. |
+| `esc` | Turns → sessions. Sessions → quit. |
+| `space` | Toggle selection on focused item |
+| `c` | Compare selected items (opens comparison in detail) |
+| `/` | Search/filter current list |
+| `[` / `]` | Resize left/right panes |
+| `?` | Help overlay |
+| `q` | Quit |
+
+### Detail Pane Keys (when detail has focus after enter)
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move to next item in detail (next tool call, next agent, next file) |
+| `k` / `↑` | Move to previous item |
+| `enter` | Drill into focused item (diff, agent detail, file history) |
+| `esc` | Back up one level. At Level 1: return focus to left pane. |
+| `h` / `←` | Scroll detail content up |
+| `l` / `→` | Scroll detail content down |
+
+The transition between left-pane focus and detail-pane focus is the key UX moment. When you press enter on a turn in the left pane, the detail pane gains focus — items within it become navigable with j/k. Esc returns focus to the left pane. This is like lazygit's panel switching.
 
 ---
 
 ## Selection and Comparison
 
-Spacebar marks items at the current level. Marked items show a visual indicator (e.g., `●` prefix or highlight). The status bar shows the count: `2 selected`.
+Spacebar marks items in the left pane. Visual indicator (●) on marked items. Status bar shows count.
 
-Pressing `c` with selections opens a comparison view in the detail pane:
+`c` opens a comparison view in the detail pane:
 
-| Level | Selection | Comparison view |
-|-------|-----------|----------------|
-| Sessions | 2+ sessions | Token totals, duration, prompt counts side by side |
-| Turns | 2 turns | File diff between the two points (replaces M7's `m` mark) |
-| Turns | 3+ turns | File changes across the selected range |
-| Items | 2+ tool calls | Side-by-side diffs (if applicable) |
+| Selected | Comparison shows |
+|----------|-----------------|
+| 2 sessions | Token totals, duration, prompt counts side by side |
+| 2 turns | File diff between the two points — all files changed with unified diffs |
+| 3+ turns | Changes across the selected range |
 
-Esc from a comparison view returns to single-item detail. Spacebar on an already-selected item deselects it.
+Esc from comparison returns to single-item detail. Spacebar deselects.
 
 ---
 
 ## Live Behavior
 
-Live sessions are the same UI with auto-follow:
+**Auto-follow** is on by default for the most recent session. The left pane cursor tracks the latest turn. The detail pane auto-scrolls to the bottom so new content is visible as it arrives.
 
-- **Auto-follow on by default** for the latest session's latest turn
-- Cursor stays on the latest turn, detail auto-scrolls to show new content at the bottom
-- New tool calls and agent activity appear in the detail pane as they arrive
-- New turns appear in the list and the cursor moves to them automatically
-- **Manual navigation disengages auto-follow**: pressing j/k or selecting a different turn stops auto-follow. The user is now browsing history while the session continues.
-- **Re-engaging auto-follow**: pressing `G` (go to bottom) re-engages auto-follow
+**Manual navigation disengages auto-follow.** Pressing j/k to move to a different turn means you're browsing history. The session continues updating in the background — new turns appear in the list, you just don't jump to them.
 
-When viewing a live turn's items:
-- Running agents show their latest tool call: `⬡ subagent-1 (Explore) — running 14s → Edit app.go`
-- New tool calls append to the bottom of the list
-- The detail pane for a running agent updates as tool calls arrive
-- Completed agents show summary: `⬡ subagent-1 — done 25s — 4 files, 2 edits`
+**`G` re-engages auto-follow.** Jump to the bottom of the turn list and resume tracking.
 
----
+**What updates live in the detail pane:**
+- New tool calls appear at the bottom of the tool call list
+- Running agents update their status line: `running 14s → Edit app.go`
+- Agent completion changes the summary: `done 25s — 4 files`
+- File activity section updates as new files are touched
+- Conflict warnings appear immediately when two agents touch the same file
 
-## Detail Pane Content
-
-### Session detail (Level 1)
-- Project name, model, start/end time, duration
-- Prompt count, total tokens (in/out), file count
-- Context% of most recent prompt
-- Agent summary: total agents spawned, parallel count, failures
-
-### Turn detail (Level 2) — the main view
-This is what users see most. It must be useful at a glance.
-
-**Header**: index, time range, duration, model, tokens in/out, context%
-
-**Human text**: the user's prompt (truncated, full on scroll)
-
-**Warnings**: loop detected, context high/critical, agent conflicts, interrupted
-
-**Tool calls** (inline, scrollable):
-- Edit: path + inline colored diff (3-4 lines max, `... N more` if longer)
-- Write: path + line count delta, `+N lines`
-- Bash: truncated command, exit code if non-zero
-- Read: path (dimmed — reads are low-signal)
-- Glob/Grep: pattern (dimmed)
-- Agent: collapsed summary with latest tool call if running
-
-**File activity** (bottom section):
-- All files touched in this turn (parent + agents), sorted by heat
-- Per file: path, ops (W×N R×M E×K), agent attribution, session-wide heat indicator
-- Files touched by multiple agents highlighted
-
-### Tool call detail (Level 3)
-- **Edit**: full diff with context lines, colored add/del
-- **Write**: full content or diff against prior state if available
-- **Bash**: full command, full output (scrollable)
-- **Read**: file path, content excerpt
-- **Agent**: task description, task prompt, model, status, duration, tokens in/out, files touched with per-file W/R/E counts, tool call count
-
-### File history (drill into a file from the activity section)
-- Complete chronological history of all operations on this file across the session
-- Per entry: prompt index, op type, agent label, delta, mini-diff
-- Scrollable, shows the full story of the file
+**The experience is the same as historical** — you see the same layout, same content. Live just means new lines appear at the bottom and agent status lines pulse. No mode switch.
 
 ---
 
 ## Sorting and Scrolling
 
-### Left pane
+### Left Pane
 - **Sessions**: most recent first (by end time)
 - **Turns**: chronological (prompt index)
-- **Items**: chronological within the turn (tool call order)
-- Scrolling: list auto-scrolls to keep cursor visible. During auto-follow, cursor moves to new items.
+- List auto-scrolls to keep cursor visible
+- During auto-follow, cursor moves to new items automatically
 
-### Right pane
-- Content scrolls independently with `h`/`l` (or left/right arrows)
-- During auto-follow, auto-scrolls to bottom so new content is visible
-- Manual scroll disengages detail auto-scroll (but not list auto-follow)
-- `g` in detail context scrolls detail to top
+### Right Pane
+- **Turn detail**: content rendered top-to-bottom: header, text, warnings, tool calls, agents, files
+- **Scrolls independently** with h/l
+- **During auto-follow**: auto-scrolls to bottom so new content is visible
+- **Manual scroll** does not disengage auto-follow for the left pane (they're independent)
 
 ---
 
 ## Status Bar
 
-Always at the bottom. Shows contextual information:
-
-- **Live indicator**: `●` dot when session is live
-- **Breadcrumb echo**: current path in the hierarchy
+Always at the bottom. Shows:
+- **Live indicator**: `●` when session is live and auto-following
+- **Location echo**: current session name, turn count
 - **Selection count**: `2 selected` when items are marked
-- **Key hints**: context-appropriate, showing available actions
-- **Stats**: prompt count, token count, context%, agent activity (when relevant)
+- **Key hints**: context-appropriate (show `enter` when items are drillable, `esc` when drill-in is active, `space` when items are selectable)
+- **Stats**: token count, context%, agent activity
