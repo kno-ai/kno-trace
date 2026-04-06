@@ -304,6 +304,47 @@ func TestDetail_NestedAgentExpansion(t *testing.T) {
 	}
 }
 
+func TestDetail_ComparisonView(t *testing.T) {
+	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	p := testPromptWithAgents()
+
+	// Set comparison content.
+	d.SetComparison("  Comparing #1 → #3\n\n  main.go\n  + new line\n")
+	if !d.IsComparing() {
+		t.Error("expected comparison mode")
+	}
+
+	v := d.View(p, false)
+	if !strings.Contains(v, "Comparing") {
+		t.Error("expected comparison content in view")
+	}
+	// Should not show prompt detail when comparing.
+	if strings.Contains(v, "run parallel agents") {
+		t.Error("should not show prompt text during comparison")
+	}
+
+	d.ClearComparison()
+	if d.IsComparing() {
+		t.Error("expected comparison to be cleared")
+	}
+
+	v = d.View(p, false)
+	if !strings.Contains(v, "run parallel agents") {
+		t.Error("expected prompt text after clearing comparison")
+	}
+}
+
+func TestDetail_ComparisonPersistsAcrossPromptChange(t *testing.T) {
+	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d.SetComparison("comparison content")
+
+	// ResetExpansion should NOT clear comparison.
+	d.ResetExpansion()
+	if !d.IsComparing() {
+		t.Error("comparison should persist across ResetExpansion")
+	}
+}
+
 func TestDetail_ZeroWidthHeight(t *testing.T) {
 	d := Detail{Width: 0, Height: 0, agentCursor: -1}
 	p := testPromptWithAgents()

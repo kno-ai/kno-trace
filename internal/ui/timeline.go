@@ -385,6 +385,12 @@ func (t timelineModel) statsBar() string {
 		}
 	}
 
+	// Selection count.
+	selCount := t.list.SelectedCount()
+	if selCount > 0 {
+		parts = append(parts, SelectedStyle.Render(fmt.Sprintf("%d selected", selCount)))
+	}
+
 	// Key hints — context-appropriate based on focus.
 	var keys string
 	if t.detail.HasFocus {
@@ -392,9 +398,16 @@ func (t timelineModel) statsBar() string {
 			KeyStyle.Render("enter") + " " + KeyDescStyle.Render("drill in") + "  " +
 			KeyStyle.Render("esc") + " " + KeyDescStyle.Render("back") + "  " +
 			KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")
+	} else if selCount > 0 {
+		keys = KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("turns") + "  " +
+			KeyStyle.Render("space") + " " + KeyDescStyle.Render("select") + "  " +
+			KeyStyle.Render("c") + " " + KeyDescStyle.Render("compare") + "  " +
+			KeyStyle.Render("esc") + " " + KeyDescStyle.Render("clear") + "  " +
+			KeyStyle.Render("q") + " " + KeyDescStyle.Render("quit")
 	} else {
 		keys = KeyStyle.Render("j/k") + " " + KeyDescStyle.Render("turns") + "  " +
 			KeyStyle.Render("enter") + " " + KeyDescStyle.Render("detail") + "  " +
+			KeyStyle.Render("space") + " " + KeyDescStyle.Render("select") + "  " +
 			KeyStyle.Render("[/]") + " " + KeyDescStyle.Render("resize") + "  " +
 			KeyStyle.Render("/") + " " + KeyDescStyle.Render("filter") + "  " +
 			KeyStyle.Render("esc") + " " + KeyDescStyle.Render("sessions") + "  " +

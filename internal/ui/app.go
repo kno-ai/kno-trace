@@ -272,24 +272,44 @@ func (a App) updateTurns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.cleanup()
 		return a, tea.Quit
 	case "esc":
+		// Layered: comparison → filter → sessions.
+		if a.timeline.detail.IsComparing() {
+			a.timeline.detail.ClearComparison()
+			return a, nil
+		}
 		if a.timeline.filter != "" {
 			a.timeline.filter = ""
 			a.timeline.filteredIdxs = nil
 			a.timeline.restoreFullList()
 			return a, nil
 		}
-		// Back to sessions.
+		// Clear selection if any, otherwise back to sessions.
+		if a.timeline.list.SelectedCount() > 0 {
+			a.timeline.list.ClearSelection()
+			return a, nil
+		}
 		a.resetSession()
 		a.refreshSessions()
 		a.left = leftSessions
 		a.statusMsg = ""
+		return a, nil
+	case " ":
+		// Toggle selection on current turn.
+		a.timeline.list.ToggleSelection()
+		return a, nil
+	case "c":
+		// Compare selected turns.
+		indices := a.timeline.list.SelectedPromptIndices()
+		if len(indices) >= 2 && a.session != nil {
+			content := buildComparison(a.session, indices[0], indices[len(indices)-1], a.timeline.detail.Width)
+			a.timeline.detail.SetComparison(content)
+		}
 		return a, nil
 	case "enter":
 		// Give focus to the detail pane.
 		selected := a.timeline.list.SelectedPrompt()
 		if selected != nil {
 			a.timeline.detail.HasFocus = true
-			// If the turn has agents, start with agent cursor on first.
 			if len(selected.Agents) > 0 {
 				a.timeline.detail.agentCursor = 0
 			}

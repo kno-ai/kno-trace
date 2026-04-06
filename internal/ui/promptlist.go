@@ -11,12 +11,15 @@ import (
 
 // PromptList is a scrollable list of prompts with badges and branch dividers.
 type PromptList struct {
-	Prompts  []*model.Prompt
-	Cursor   int
-	Offset   int // scroll offset (first visible index)
-	Width    int
-	Height   int
+	Prompts   []*model.Prompt
+	Cursor    int
+	Offset    int // scroll offset (first visible index)
+	Width     int
+	Height    int
 	CompactAt map[int]bool // prompt indices where compact occurred
+
+	// Selected holds the prompt indices marked with spacebar for comparison.
+	Selected map[int]bool
 }
 
 // NewPromptList creates a prompt list from session data.
@@ -195,17 +198,23 @@ func (pl *PromptList) renderPromptLine(p *model.Prompt, selected bool) string {
 		text = "(no text)"
 	}
 
+	isMarked := pl.Selected != nil && pl.Selected[p.Index]
+	marker := " "
+	if isMarked {
+		marker = SelectedStyle.Render("●")
+	}
+
 	if selected {
-		cursor := SelectedStyle.Render("> ")
+		cursor := SelectedStyle.Render(">")
 		line := lipgloss.NewStyle().Foreground(ColorBrandTeal).Render(
 			fmt.Sprintf("%s %s%s", prefix, text, badgeStr))
-		return cursor + line
+		return cursor + marker + line
 	}
 
 	idx := MutedStyle.Render(prefix)
 	body := NormalStyle.Render(" " + text)
 	badge := DimStyle.Render(badgeStr)
-	return "  " + idx + body + badge
+	return " " + marker + idx + body + badge
 }
 
 type toolCountResult struct {
@@ -227,6 +236,50 @@ func toolCounts(p *model.Prompt) toolCountResult {
 		}
 	}
 	return c
+}
+
+// ToggleSelection toggles the selection state of the prompt at the cursor.
+func (pl *PromptList) ToggleSelection() {
+	if len(pl.Prompts) == 0 || pl.Cursor < 0 || pl.Cursor >= len(pl.Prompts) {
+		return
+	}
+	if pl.Selected == nil {
+		pl.Selected = make(map[int]bool)
+	}
+	idx := pl.Prompts[pl.Cursor].Index
+	if pl.Selected[idx] {
+		delete(pl.Selected, idx)
+	} else {
+		pl.Selected[idx] = true
+	}
+}
+
+// ClearSelection removes all selections.
+func (pl *PromptList) ClearSelection() {
+	pl.Selected = nil
+}
+
+// SelectedCount returns the number of selected items.
+func (pl *PromptList) SelectedCount() int {
+	return len(pl.Selected)
+}
+
+// SelectedPromptIndices returns the selected prompt indices sorted ascending.
+func (pl *PromptList) SelectedPromptIndices() []int {
+	if len(pl.Selected) == 0 {
+		return nil
+	}
+	var indices []int
+	for idx := range pl.Selected {
+		indices = append(indices, idx)
+	}
+	// Simple sort for small N.
+	for i := 1; i < len(indices); i++ {
+		for j := i; j > 0 && indices[j] < indices[j-1]; j-- {
+			indices[j], indices[j-1] = indices[j-1], indices[j]
+		}
+	}
+	return indices
 }
 
 // firstLine returns the first line of a string, trimmed.

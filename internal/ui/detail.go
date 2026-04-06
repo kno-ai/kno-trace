@@ -26,8 +26,11 @@ type Detail struct {
 	agentCursor int
 
 	// toolCallDrillIn is set when the user drills into a specific tool call.
-	// Holds a pointer to the ToolCall being viewed in detail. Nil = not drilled in.
 	toolCallDrillIn *model.ToolCall
+
+	// comparison holds the rendered comparison content when comparing selected turns.
+	// Non-empty = showing comparison view. Cleared by esc.
+	comparison string
 }
 
 // View renders the detail pane for the given prompt.
@@ -41,6 +44,11 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 	w := d.Width
 	if w <= 0 {
 		w = 50
+	}
+
+	// Comparison mode: show comparison content.
+	if d.comparison != "" {
+		return d.applyScroll(d.comparison)
 	}
 
 	// Tool call drill-in: show full detail for a specific tool call.
@@ -180,7 +188,26 @@ func (d *Detail) ResetExpansion() {
 	d.expandedCursors = nil
 	d.agentCursor = -1
 	d.toolCallDrillIn = nil
+	// Note: comparison is NOT cleared here — it persists while browsing turns.
+	// Cleared explicitly by esc from comparison or ClearComparison.
 	d.HasFocus = false
+}
+
+// SetComparison sets the comparison content to display.
+func (d *Detail) SetComparison(content string) {
+	d.comparison = content
+	d.Offset = 0
+}
+
+// IsComparing returns true if a comparison view is active.
+func (d *Detail) IsComparing() bool {
+	return d.comparison != ""
+}
+
+// ClearComparison exits comparison mode.
+func (d *Detail) ClearComparison() {
+	d.comparison = ""
+	d.Offset = 0
 }
 
 // DrillIntoToolCall sets the detail to show a specific tool call's full detail.
@@ -668,17 +695,7 @@ func (d *Detail) renderToolCallDetail(b *strings.Builder, p *model.Prompt, tc *m
 	case model.ToolEdit:
 		b.WriteString(MutedStyle.Render("  File: ") + tc.Path + "\n\n")
 		if tc.OldStr != "" && tc.NewStr != "" {
-			diff := replay.FormatFullDiff(tc.OldStr, tc.NewStr, w)
-			for _, line := range strings.Split(diff, "\n") {
-				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "+") {
-					b.WriteString(MutedStyle.Foreground(ColorBrandTeal).Render(line) + "\n")
-				} else if strings.HasPrefix(trimmed, "-") {
-					b.WriteString(MutedStyle.Foreground(ColorRed).Render(line) + "\n")
-				} else {
-					b.WriteString(DimStyle.Render(line) + "\n")
-				}
-			}
+			renderColoredDiff(b, replay.FormatFullDiff(tc.OldStr, tc.NewStr, w))
 		}
 
 	case model.ToolWrite:
@@ -827,6 +844,23 @@ func (d *Detail) renderFileActivity(b *strings.Builder, p *model.Prompt) {
 
 		path := Truncate(se.path, d.Width-30)
 		b.WriteString("    " + path + " " + opStr + agentStr + "\n")
+	}
+}
+
+// renderColoredDiff writes diff lines with add=teal, del=red, context=dim.
+func renderColoredDiff(b *strings.Builder, diffText string) {
+	for _, line := range strings.Split(diffText, "\n") {
+		if line == "" {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "+") {
+			b.WriteString(MutedStyle.Foreground(ColorBrandTeal).Render(line) + "\n")
+		} else if strings.HasPrefix(trimmed, "-") {
+			b.WriteString(MutedStyle.Foreground(ColorRed).Render(line) + "\n")
+		} else {
+			b.WriteString(DimStyle.Render(line) + "\n")
+		}
 	}
 }
 
