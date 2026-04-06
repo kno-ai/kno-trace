@@ -316,7 +316,11 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.cleanup()
 		return a, tea.Quit
 	case "esc":
-		// Layered dismissal: expanded → agent focus → return to left pane.
+		// Layered dismissal: tool call → expanded → agent focus → left pane.
+		if a.timeline.detail.IsDrilledIntoToolCall() {
+			a.timeline.detail.ExitToolCallDrillIn()
+			return a, nil
+		}
 		if a.timeline.detail.IsAgentExpanded() {
 			a.timeline.detail.CollapseAgent()
 			return a, nil
@@ -329,14 +333,28 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.timeline.detail.HasFocus = false
 		return a, nil
 	case "enter":
+		// If viewing a tool call detail, no further drill-in.
+		if a.timeline.detail.IsDrilledIntoToolCall() {
+			return a, nil
+		}
 		selected := a.timeline.list.SelectedPrompt()
 		if selected == nil {
 			return a, nil
 		}
 		if a.timeline.detail.IsAgentExpanded() {
 			ag := a.timeline.detail.resolveExpandedAgent(selected)
-			if ag != nil && len(ag.Children) > 0 && a.timeline.detail.IsAgentFocused() {
+			if ag == nil {
+				return a, nil
+			}
+			// If agent cursor is on a child agent, expand it.
+			if a.timeline.detail.IsAgentFocused() && len(ag.Children) > 0 {
 				a.timeline.detail.ExpandAgent(ag.Children)
+				return a, nil
+			}
+			// Otherwise, drill into the focused tool call within the agent.
+			if a.timeline.detail.agentCursor >= 0 && a.timeline.detail.agentCursor < len(ag.ToolCalls) {
+				a.timeline.detail.DrillIntoToolCall(ag.ToolCalls[a.timeline.detail.agentCursor])
+				return a, nil
 			}
 		} else if a.timeline.detail.IsAgentFocused() {
 			a.timeline.detail.ExpandAgent(selected.Agents)
@@ -347,16 +365,28 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if selected == nil {
 			return a, nil
 		}
+		if a.timeline.detail.IsDrilledIntoToolCall() {
+			a.timeline.detail.ScrollDown()
+			return a, nil
+		}
 		if a.timeline.detail.IsAgentExpanded() {
 			ag := a.timeline.detail.resolveExpandedAgent(selected)
-			if ag != nil && len(ag.Children) > 0 {
-				a.timeline.detail.AgentCursorDown(len(ag.Children))
+			if ag != nil {
+				// Navigate tool calls + child agents within the expanded agent.
+				totalItems := len(ag.ToolCalls) + len(ag.Children)
+				if totalItems > 0 {
+					a.timeline.detail.AgentCursorDown(totalItems)
+				}
 			}
 		} else if len(selected.Agents) > 0 {
 			a.timeline.detail.AgentCursorDown(len(selected.Agents))
 		}
 		return a, nil
 	case "k", "up":
+		if a.timeline.detail.IsDrilledIntoToolCall() {
+			a.timeline.detail.ScrollUp()
+			return a, nil
+		}
 		a.timeline.detail.AgentCursorUp()
 		return a, nil
 	case "h", "left":

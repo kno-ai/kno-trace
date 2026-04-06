@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kno-ai/kno-trace/internal/model"
+	"github.com/kno-ai/kno-trace/internal/replay"
 )
 
 // Detail renders the right-pane detail view for a selected prompt.
@@ -14,20 +15,19 @@ type Detail struct {
 	Height int
 	Offset int // scroll offset for long content
 
-	// HasFocus is true when the detail pane is the active pane (j/k navigate
-	// items within the detail rather than turns in the left pane). Set by
-	// pressing enter on a turn, cleared by esc.
+	// HasFocus is true when the detail pane is the active pane.
 	HasFocus bool
 
-	// Agent expansion state. When non-empty, we're viewing an expanded agent.
-	expandedPath []string
-
-	// expandedCursors tracks the agent cursor position at each expansion level.
+	// Agent expansion state.
+	expandedPath    []string
 	expandedCursors []int
 
-	// agentCursor tracks which agent is focused for enter/navigation.
-	// -1 = no agent focused. Must be initialized to -1.
+	// agentCursor tracks which agent is focused. -1 = no agent focused.
 	agentCursor int
+
+	// toolCallDrillIn is set when the user drills into a specific tool call.
+	// Holds a pointer to the ToolCall being viewed in detail. Nil = not drilled in.
+	toolCallDrillIn *model.ToolCall
 }
 
 // View renders the detail pane for the given prompt.
@@ -43,14 +43,19 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 		w = 50
 	}
 
-	// If an agent is expanded, render the agent detail view instead.
+	// Tool call drill-in: show full detail for a specific tool call.
+	if d.toolCallDrillIn != nil {
+		d.renderToolCallDetail(&b, p, d.toolCallDrillIn, w)
+		return d.applyScroll(b.String())
+	}
+
+	// Agent expansion: show agent detail.
 	if len(d.expandedPath) > 0 {
 		ag := d.resolveExpandedAgent(p)
 		if ag != nil {
 			d.renderExpandedAgent(&b, p, ag, isLive, w)
 			return d.applyScroll(b.String())
 		}
-		// Path is stale — agent was removed. Fall through to prompt view.
 		d.expandedPath = nil
 		d.agentCursor = -1
 	}
@@ -77,6 +82,9 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 
 	// Agents — with cursor for selection.
 	d.renderAgentsWithCursor(&b, p, isLive)
+
+	// File activity section.
+	d.renderFileActivity(&b, p)
 
 	return d.applyScroll(b.String())
 }
@@ -171,7 +179,25 @@ func (d *Detail) ResetExpansion() {
 	d.expandedPath = nil
 	d.expandedCursors = nil
 	d.agentCursor = -1
+	d.toolCallDrillIn = nil
 	d.HasFocus = false
+}
+
+// DrillIntoToolCall sets the detail to show a specific tool call's full detail.
+func (d *Detail) DrillIntoToolCall(tc *model.ToolCall) {
+	d.toolCallDrillIn = tc
+	d.Offset = 0
+}
+
+// IsDrilledIntoToolCall returns true if viewing a tool call detail.
+func (d *Detail) IsDrilledIntoToolCall() bool {
+	return d.toolCallDrillIn != nil
+}
+
+// ExitToolCallDrillIn returns to the turn-level or agent-level view.
+func (d *Detail) ExitToolCallDrillIn() {
+	d.toolCallDrillIn = nil
+	d.Offset = 0
 }
 
 func (d *Detail) ScrollDown() {
@@ -286,52 +312,77 @@ func (d *Detail) renderToolCalls(b *strings.Builder, p *model.Prompt) {
 		if tc.Type == model.ToolAgent {
 			continue // Rendered separately in agents section.
 		}
+		d.renderOneToolCall(b, tc, "  ")
+	}
+}
 
-		icon := toolIcon(tc.Type)
-		line := icon + " "
+// renderOneToolCall renders a single tool call line with optional inline diff.
+func (d *Detail) renderOneToolCall(b *strings.Builder, tc *model.ToolCall, indent string) {
+	icon := toolIcon(tc.Type)
+	line := icon + " "
 
-		switch tc.Type {
-		case model.ToolWrite:
-			delta := fmt.Sprintf("+%d", strings.Count(tc.Content, "\n"))
-			pin := ""
-			if tc.IsCLAUDEMD {
-				pin = " 📌"
-			}
-			line += fmt.Sprintf("%s %s%s", tc.Path, DimStyle.Render(delta), pin)
-		case model.ToolEdit:
-			added := strings.Count(tc.NewStr, "\n")
-			removed := strings.Count(tc.OldStr, "\n")
-			delta := fmt.Sprintf("+%d -%d", added, removed)
-			pin := ""
-			if tc.IsCLAUDEMD {
-				pin = " 📌"
-			}
-			line += fmt.Sprintf("%s %s%s", tc.Path, DimStyle.Render(delta), pin)
-		case model.ToolRead:
-			pin := ""
-			if tc.IsCLAUDEMD {
-				pin = " 📌"
-			}
-			line += tc.Path + pin
-		case model.ToolBash:
-			cmd := Truncate(tc.Command, d.Width-10)
-			if tc.ExitCode > 0 {
-				line += MutedStyle.Foreground(ColorRed).Render(cmd)
-			} else {
-				line += cmd
-			}
-		case model.ToolMCP:
-			line += MutedStyle.Foreground(ColorYellow).Render(
-				fmt.Sprintf("%s/%s ⚠ external", tc.MCPServerName, tc.MCPToolName))
-		case model.ToolGlob:
-			line += DimStyle.Render(tc.Path)
-		case model.ToolGrep:
-			line += DimStyle.Render(tc.Path)
-		default:
-			line += DimStyle.Render(string(tc.Type))
+	switch tc.Type {
+	case model.ToolWrite:
+		delta := fmt.Sprintf("+%d", strings.Count(tc.Content, "\n"))
+		pin := ""
+		if tc.IsCLAUDEMD {
+			pin = " 📌"
 		}
+		line += fmt.Sprintf("%s %s%s", tc.Path, DimStyle.Render(delta), pin)
+	case model.ToolEdit:
+		added := strings.Count(tc.NewStr, "\n")
+		removed := strings.Count(tc.OldStr, "\n")
+		delta := fmt.Sprintf("+%d -%d", added, removed)
+		pin := ""
+		if tc.IsCLAUDEMD {
+			pin = " 📌"
+		}
+		line += fmt.Sprintf("%s %s%s", tc.Path, DimStyle.Render(delta), pin)
+	case model.ToolRead:
+		pin := ""
+		if tc.IsCLAUDEMD {
+			pin = " 📌"
+		}
+		line += tc.Path + pin
+	case model.ToolBash:
+		cmd := Truncate(tc.Command, d.Width-10)
+		if tc.ExitCode > 0 {
+			line += MutedStyle.Foreground(ColorRed).Render(cmd)
+		} else {
+			line += cmd
+		}
+	case model.ToolMCP:
+		line += MutedStyle.Foreground(ColorYellow).Render(
+			fmt.Sprintf("%s/%s ⚠ external", tc.MCPServerName, tc.MCPToolName))
+	case model.ToolGlob:
+		line += DimStyle.Render(tc.Path)
+	case model.ToolGrep:
+		line += DimStyle.Render(tc.Path)
+	default:
+		line += DimStyle.Render(string(tc.Type))
+	}
 
-		b.WriteString("  " + line + "\n")
+	b.WriteString(indent + line + "\n")
+
+	// Inline mini-diff for Edit tool calls.
+	if tc.Type == model.ToolEdit && tc.OldStr != "" && tc.NewStr != "" {
+		miniDiff := replay.FormatMiniDiff(tc.OldStr, tc.NewStr, 4, d.Width)
+		if miniDiff != "" {
+			// Color the diff lines.
+			for _, diffLine := range strings.Split(miniDiff, "\n") {
+				if diffLine == "" {
+					continue
+				}
+				trimmed := strings.TrimSpace(diffLine)
+				if strings.HasPrefix(trimmed, "+") {
+					b.WriteString(indent + MutedStyle.Foreground(ColorBrandTeal).Render(diffLine) + "\n")
+				} else if strings.HasPrefix(trimmed, "-") {
+					b.WriteString(indent + MutedStyle.Foreground(ColorRed).Render(diffLine) + "\n")
+				} else {
+					b.WriteString(indent + DimStyle.Render(diffLine) + "\n")
+				}
+			}
+		}
 	}
 }
 
@@ -545,7 +596,7 @@ func (d *Detail) renderOneAgent(b *strings.Builder, agent *model.AgentNode, p *m
 	case model.AgentRunning:
 		var parts []string
 		if n := len(agent.ToolCalls); n > 0 {
-			parts = append(parts, fmt.Sprintf("%d tools so far", n))
+			parts = append(parts, fmt.Sprintf("%d tools", n))
 		}
 		if !agent.StartTime.IsZero() && isLive {
 			parts = append(parts, FormatDuration(time.Since(agent.StartTime)))
@@ -556,16 +607,32 @@ func (d *Detail) renderOneAgent(b *strings.Builder, agent *model.AgentNode, p *m
 		}
 		b.WriteString(fmt.Sprintf("%s⬡ %s (%s) — running%s%s\n",
 			prefix, agent.Label, typeLabel, DimStyle.Render(meta), suffix))
-		if desc != "" {
+		// Show latest tool call inline so you see what the agent is doing now.
+		if n := len(agent.ToolCalls); n > 0 {
+			latest := agent.ToolCalls[n-1]
+			latestIcon := toolIcon(latest.Type)
+			latestPath := latest.Path
+			if latest.Type == model.ToolBash {
+				latestPath = Truncate(latest.Command, d.Width-20)
+			}
+			if latestPath == "" {
+				latestPath = string(latest.Type)
+			}
+			b.WriteString(indent + "    " + DimStyle.Render("→ "+latestIcon+" "+latestPath) + "\n")
+		} else if desc != "" {
 			b.WriteString(indent + "    " + DimStyle.Render(desc) + "\n")
 		}
 
 	case model.AgentSucceeded:
 		meta := ""
-		if agent.TotalToolUseCount > 0 {
-			meta = fmt.Sprintf(" — %d tools, %s tokens, %s",
-				agent.TotalToolUseCount,
-				FormatTokens(agent.TotalTokens),
+		if agent.TotalToolUseCount > 0 || len(agent.ToolCalls) > 0 {
+			toolCount := agent.TotalToolUseCount
+			if toolCount == 0 {
+				toolCount = len(agent.ToolCalls)
+			}
+			fileCount := len(agent.FilesTouched)
+			meta = fmt.Sprintf(" — %d tools, %d files, %s",
+				toolCount, fileCount,
 				FormatDuration(agent.Duration))
 		}
 		b.WriteString(fmt.Sprintf("%s⬡ ✓ %s (%s) — done%s%s\n",
@@ -584,6 +651,182 @@ func (d *Detail) renderOneAgent(b *strings.Builder, agent *model.AgentNode, p *m
 	default:
 		b.WriteString(fmt.Sprintf("%s⬡ %s (%s) — %s%s\n",
 			prefix, agent.Label, typeLabel, DimStyle.Render(desc), suffix))
+	}
+}
+
+// renderToolCallDetail renders the full detail for a drilled-into tool call.
+func (d *Detail) renderToolCallDetail(b *strings.Builder, p *model.Prompt, tc *model.ToolCall, w int) {
+	// Breadcrumb.
+	crumb := fmt.Sprintf("#%d > %s %s", p.Index+1, toolIcon(tc.Type), Truncate(tc.Path, w-20))
+	if tc.Type == model.ToolBash {
+		crumb = fmt.Sprintf("#%d > $ %s", p.Index+1, Truncate(tc.Command, w-20))
+	}
+	b.WriteString(SelectedStyle.Render(crumb))
+	b.WriteString("\n\n")
+
+	switch tc.Type {
+	case model.ToolEdit:
+		b.WriteString(MutedStyle.Render("  File: ") + tc.Path + "\n\n")
+		if tc.OldStr != "" && tc.NewStr != "" {
+			diff := replay.FormatFullDiff(tc.OldStr, tc.NewStr, w)
+			for _, line := range strings.Split(diff, "\n") {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "+") {
+					b.WriteString(MutedStyle.Foreground(ColorBrandTeal).Render(line) + "\n")
+				} else if strings.HasPrefix(trimmed, "-") {
+					b.WriteString(MutedStyle.Foreground(ColorRed).Render(line) + "\n")
+				} else {
+					b.WriteString(DimStyle.Render(line) + "\n")
+				}
+			}
+		}
+
+	case model.ToolWrite:
+		b.WriteString(MutedStyle.Render("  File: ") + tc.Path + "\n")
+		lineCount := strings.Count(tc.Content, "\n")
+		b.WriteString(MutedStyle.Render(fmt.Sprintf("  Lines: %d", lineCount)) + "\n\n")
+		if tc.Content != "" {
+			// Show first ~20 lines.
+			lines := strings.Split(tc.Content, "\n")
+			shown := min(20, len(lines))
+			for _, line := range lines[:shown] {
+				b.WriteString("  " + DimStyle.Render(Truncate(line, w-4)) + "\n")
+			}
+			if len(lines) > shown {
+				b.WriteString(DimStyle.Render(fmt.Sprintf("  ... +%d more lines", len(lines)-shown)) + "\n")
+			}
+		}
+
+	case model.ToolBash:
+		b.WriteString(MutedStyle.Render("  Command:") + "\n")
+		b.WriteString("  " + tc.Command + "\n\n")
+		if tc.ExitCode >= 0 {
+			exitStyle := MutedStyle
+			if tc.ExitCode > 0 {
+				exitStyle = MutedStyle.Foreground(ColorRed)
+			}
+			b.WriteString(exitStyle.Render(fmt.Sprintf("  Exit code: %d", tc.ExitCode)) + "\n")
+		}
+		if tc.Output != "" {
+			b.WriteString(MutedStyle.Render("  Output:") + "\n")
+			for _, line := range strings.Split(tc.Output, "\n") {
+				b.WriteString("  " + DimStyle.Render(Truncate(line, w-4)) + "\n")
+			}
+		}
+
+	case model.ToolRead:
+		b.WriteString(MutedStyle.Render("  File: ") + tc.Path + "\n")
+		if tc.Content != "" {
+			lineCount := strings.Count(tc.Content, "\n")
+			b.WriteString(MutedStyle.Render(fmt.Sprintf("  Lines: %d", lineCount)) + "\n")
+		}
+
+	default:
+		b.WriteString(MutedStyle.Render(fmt.Sprintf("  Type: %s", tc.Type)) + "\n")
+		if tc.Path != "" {
+			b.WriteString(MutedStyle.Render("  Path: ") + tc.Path + "\n")
+		}
+	}
+}
+
+// renderFileActivity renders the file activity section at the bottom of turn detail.
+func (d *Detail) renderFileActivity(b *strings.Builder, p *model.Prompt) {
+	// Collect all files touched in this turn (parent + agents).
+	type fileEntry struct {
+		path       string
+		writes     int
+		reads      int
+		edits      int
+		agents     []string // agent labels that touched this file
+	}
+	files := make(map[string]*fileEntry)
+
+	addOp := func(path string, t model.ToolType, agentLabel string) {
+		if path == "" {
+			return
+		}
+		fe, ok := files[path]
+		if !ok {
+			fe = &fileEntry{path: path}
+			files[path] = fe
+		}
+		switch t {
+		case model.ToolWrite:
+			fe.writes++
+		case model.ToolRead:
+			fe.reads++
+		case model.ToolEdit:
+			fe.edits++
+		}
+		if agentLabel != "" {
+			found := false
+			for _, a := range fe.agents {
+				if a == agentLabel {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fe.agents = append(fe.agents, agentLabel)
+			}
+		}
+	}
+
+	for _, tc := range p.ToolCalls {
+		if tc.Type == model.ToolWrite || tc.Type == model.ToolRead || tc.Type == model.ToolEdit {
+			addOp(tc.Path, tc.Type, "")
+		}
+	}
+	for _, ag := range p.Agents {
+		for _, tc := range ag.ToolCalls {
+			if tc.Type == model.ToolWrite || tc.Type == model.ToolRead || tc.Type == model.ToolEdit {
+				addOp(tc.Path, tc.Type, ag.Label)
+			}
+		}
+	}
+
+	if len(files) == 0 {
+		return
+	}
+
+	// Sort by activity (writes + edits first).
+	type sortEntry struct {
+		*fileEntry
+		heat int
+	}
+	var sorted []sortEntry
+	for _, fe := range files {
+		sorted = append(sorted, sortEntry{fe, fe.writes + fe.edits})
+	}
+	// Simple insertion sort — small N.
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j].heat > sorted[j-1].heat; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(MutedStyle.Render("  Files:") + "\n")
+	for _, se := range sorted {
+		var ops []string
+		if se.writes > 0 {
+			ops = append(ops, fmt.Sprintf("W×%d", se.writes))
+		}
+		if se.edits > 0 {
+			ops = append(ops, fmt.Sprintf("E×%d", se.edits))
+		}
+		if se.reads > 0 {
+			ops = append(ops, fmt.Sprintf("R×%d", se.reads))
+		}
+		opStr := DimStyle.Render("(" + strings.Join(ops, " ") + ")")
+
+		agentStr := ""
+		if len(se.agents) > 0 {
+			agentStr = " " + DimStyle.Render("⬡ "+strings.Join(se.agents, ", "))
+		}
+
+		path := Truncate(se.path, d.Width-30)
+		b.WriteString("    " + path + " " + opStr + agentStr + "\n")
 	}
 }
 
