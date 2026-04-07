@@ -418,11 +418,15 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a.timeline.detail.AgentCursorUp()
 		return a, nil
-	case "h", "left":
-		a.timeline.detail.ScrollUp()
-		return a, nil
-	case "l", "right":
-		a.timeline.detail.ScrollDown()
+	case "h", "left", "l", "right":
+		// Scroll in drill-in views (full diff, bash output).
+		if a.timeline.detail.IsDrilledIntoToolCall() {
+			if msg.String() == "j" || msg.String() == "down" || msg.String() == "l" || msg.String() == "right" {
+				a.timeline.detail.ScrollDown()
+			} else {
+				a.timeline.detail.ScrollUp()
+			}
+		}
 		return a, nil
 	}
 	return a, nil

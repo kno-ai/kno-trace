@@ -22,6 +22,10 @@ type Detail struct {
 	// -1 = no item focused. Set to 0 when detail gains focus.
 	itemCursor int
 
+	// focusedLine is the line number of the focused item in the rendered content.
+	// Set during rendering so applyScroll can auto-scroll to keep it visible.
+	focusedLine int
+
 	// Agent expansion state.
 	expandedPath    []string
 	expandedCursors []int
@@ -218,6 +222,7 @@ func (d *Detail) ResetExpansion() {
 }
 
 // applyScroll handles vertical scrolling within the detail content.
+// When the detail has focus, auto-scrolls to keep the focused item visible.
 func (d *Detail) applyScroll(content string) string {
 	lines := strings.Split(content, "\n")
 	visible := d.Height
@@ -228,15 +233,41 @@ func (d *Detail) applyScroll(content string) string {
 	if maxOffset < 0 {
 		maxOffset = 0
 	}
+
+	// Auto-scroll to keep focused item visible.
+	if d.HasFocus && d.focusedLine > 0 {
+		if d.focusedLine < d.Offset {
+			d.Offset = d.focusedLine
+		}
+		if d.focusedLine >= d.Offset+visible {
+			d.Offset = d.focusedLine - visible/2
+		}
+	}
+
 	if d.Offset > maxOffset {
 		d.Offset = maxOffset
 	}
+	if d.Offset < 0 {
+		d.Offset = 0
+	}
+	totalLines := len(lines)
 	if d.Offset > 0 {
 		lines = lines[d.Offset:]
 	}
 	if len(lines) > visible {
 		lines = lines[:visible]
 	}
+
+	// Scroll indicators.
+	if d.Offset > 0 {
+		lines[0] = DimStyle.Render("  ↑ more above")
+	}
+	if d.Offset+visible < totalLines {
+		if len(lines) > 0 {
+			lines[len(lines)-1] = DimStyle.Render(fmt.Sprintf("  ↓ more below (%d lines)", totalLines-d.Offset-visible))
+		}
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -442,15 +473,18 @@ func (d *Detail) renderOneToolCall(b *strings.Builder, tc *model.ToolCall, inden
 }
 
 // renderItems renders tool calls and agents as a navigable list with cursor.
+// Sets focusedLine to the line number of the focused item for auto-scroll.
 func (d *Detail) renderItems(b *strings.Builder, p *model.Prompt, isLive bool) {
 	itemIdx := 0
 
-	// Tool calls (non-Agent).
 	for _, tc := range p.ToolCalls {
 		if tc.Type == model.ToolAgent {
 			continue
 		}
 		isFocused := d.HasFocus && d.itemCursor == itemIdx
+		if isFocused {
+			d.focusedLine = strings.Count(b.String(), "\n")
+		}
 		prefix := "  "
 		if isFocused {
 			prefix = SelectedStyle.Render("> ")
@@ -459,9 +493,11 @@ func (d *Detail) renderItems(b *strings.Builder, p *model.Prompt, isLive bool) {
 		itemIdx++
 	}
 
-	// Agents.
 	for _, ag := range p.Agents {
 		isFocused := d.HasFocus && d.itemCursor == itemIdx
+		if isFocused {
+			d.focusedLine = strings.Count(b.String(), "\n")
+		}
 		d.renderOneAgent(b, ag, p, isLive, isFocused, "")
 		itemIdx++
 	}
