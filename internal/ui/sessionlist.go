@@ -289,7 +289,7 @@ func (m sessionListModel) renderSummary(w int) string {
 		} else if w <= 16 {
 			path = Truncate(path, max(5, w))
 		}
-		b.WriteString(MutedStyle.Render("Path: ") + DimStyle.Render(path))
+		b.WriteString(MutedStyle.Render("Path: ") + MutedStyle.Render(path))
 		b.WriteString("\n")
 	}
 

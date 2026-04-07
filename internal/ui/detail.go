@@ -95,7 +95,7 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 		if len(resp) > w*5 {
 			resp = resp[:w*5] + "..."
 		}
-		b.WriteString(DimStyle.Render(resp))
+		b.WriteString(MutedStyle.Render(resp))
 		b.WriteString("\n\n")
 	}
 
