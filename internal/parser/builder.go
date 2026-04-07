@@ -184,10 +184,21 @@ func IsHumanTurn(evt *RawEvent) bool {
 	}
 	// If HumanText was set from a string content, it's a human turn.
 	if evt.Message.HumanText != "" && evt.SourceToolAssistantUUID == "" {
+		// Filter out system notifications that appear as user messages.
+		if strings.HasPrefix(evt.Message.HumanText, "<task-notification>") ||
+			strings.HasPrefix(evt.Message.HumanText, "<system-reminder>") {
+			return false
+		}
 		return true
 	}
 	// If content is an array, check first block type.
 	if len(evt.Message.Content) > 0 {
+		// Filter out system notifications in array content too.
+		text := evt.Message.Content[0].Text
+		if strings.HasPrefix(text, "<task-notification>") ||
+			strings.HasPrefix(text, "<system-reminder>") {
+			return false
+		}
 		return evt.Message.Content[0].Type == "text"
 	}
 	return false
