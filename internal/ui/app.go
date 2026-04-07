@@ -310,6 +310,8 @@ func (a App) updateTurns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		selected := a.timeline.list.SelectedPrompt()
 		if selected != nil {
 			a.timeline.detail.HasFocus = true
+			// Disengage auto-follow — the user is drilling into a specific turn.
+			a.timeline.autoFollow = false
 			if len(selected.Agents) > 0 {
 				a.timeline.detail.agentCursor = 0
 			}

@@ -215,9 +215,10 @@ func (t *timelineModel) syncSession(s *model.Session) {
 		t.list.CompactAt = compactSet
 	}
 
-	// Auto-follow: keep cursor on latest prompt and scroll detail to bottom
-	// so new activity (tool calls, agents) is visible as it arrives.
-	if t.autoFollow && len(t.list.Prompts) > 0 {
+	// Auto-follow: keep cursor on latest prompt and scroll detail to bottom.
+	// Suppressed when the user is drilling into the detail pane — don't yank
+	// them away from what they're looking at.
+	if t.autoFollow && !t.detail.HasFocus && len(t.list.Prompts) > 0 {
 		t.list.Cursor = len(t.list.Prompts) - 1
 		t.list.ensureVisible()
 		t.detail.ScrollToBottom()
