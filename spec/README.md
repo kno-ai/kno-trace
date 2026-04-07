@@ -800,10 +800,11 @@ Each milestone builds progressively toward the control room vision:
 | M3 | Static Timeline | Core layout — navigable timeline with badges, search, detail pane | [m3-static-timeline.md](milestones/m3-static-timeline.md) |
 | M4 | Live Timeline & Ticker | Real-time updates, ticker, loop detection, auto-follow | [m4-live-timeline.md](milestones/m4-live-timeline.md) |
 | M5 | Agent Data Layer | ✅ Tree builder, live subagent tailing, enrichment | [m5-agents.md](milestones/m5-agents.md) |
-| M6 | Unified Navigation & Rich Detail | **The value milestone** — hierarchical drill-down, inline diffs, file intelligence, selection/comparison, live agent activity | [m6-heatmap.md](milestones/m6-heatmap.md) |
-| M7 | Release Polish & Distribution | Ship it — sparkline, help overlay, `brew install kno-trace` | [m7-diff.md](milestones/m7-diff.md) |
+| M6 | Unified Navigation & Rich Detail | ✅ Hierarchical drill-down, inline diffs, selection/comparison, live agent activity | [m6-heatmap.md](milestones/m6-heatmap.md) |
+| M7 | File Intelligence | Replay engine, stacked left pane (turns + hot files), file history drill-in | [m7-diff.md](milestones/m7-diff.md) |
+| M8 | Release Polish & Distribution | Ship it — sparkline, help overlay, `brew install kno-trace` | [m8-release.md](milestones/m8-release.md) |
 
-**The control room is usable at M4.** M5 built the agent data plumbing. **M6 is where kno-trace becomes genuinely useful** — the UI shifts from "same as Claude Code output" to "control room I want open." It implements the unified hierarchical navigation model (see [ui-model.md](ui-model.md)), inline diffs, file churn, and selection/comparison — all in the same two-pane layout. M7 polishes and ships.
+**The control room is usable at M6.** M5 built the agent data plumbing. M6 built the unified navigation with inline diffs and comparison. **M7 is the file intelligence milestone** — replay engine, hot files panel, and file history drill-in. This answers "what happened to this file?" and "which files are getting thrashed?" directly from the left pane. M8 polishes and ships.
 
 ---
 
