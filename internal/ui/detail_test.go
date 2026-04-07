@@ -51,7 +51,7 @@ func testPromptWithAgents() *model.Prompt {
 }
 
 func TestDetail_ViewNilPrompt(t *testing.T) {
-	d := Detail{Width: 80, Height: 24, agentCursor: -1}
+	d := Detail{Width: 80, Height: 24, itemCursor: -1}
 	v := d.View(nil, false)
 	if !strings.Contains(v, "Select a prompt") {
 		t.Error("expected placeholder for nil prompt")
@@ -59,7 +59,7 @@ func TestDetail_ViewNilPrompt(t *testing.T) {
 }
 
 func TestDetail_ViewWithAgents(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	p := testPromptWithAgents()
 	v := d.View(p, false)
 
@@ -75,7 +75,7 @@ func TestDetail_ViewWithAgents(t *testing.T) {
 }
 
 func TestDetail_AgentCursor(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	p := testPromptWithAgents()
 
 	// Initially no focus.
@@ -85,8 +85,8 @@ func TestDetail_AgentCursor(t *testing.T) {
 
 	// Move cursor down.
 	d.AgentCursorDown(len(p.Agents))
-	if d.agentCursor != 0 {
-		t.Errorf("expected cursor at 0, got %d", d.agentCursor)
+	if d.itemCursor != 0 {
+		t.Errorf("expected cursor at 0, got %d", d.itemCursor)
 	}
 	if !d.IsAgentFocused() {
 		t.Error("expected agent focused after cursor down")
@@ -94,38 +94,42 @@ func TestDetail_AgentCursor(t *testing.T) {
 
 	// Move cursor down again.
 	d.AgentCursorDown(len(p.Agents))
-	if d.agentCursor != 1 {
-		t.Errorf("expected cursor at 1, got %d", d.agentCursor)
+	if d.itemCursor != 1 {
+		t.Errorf("expected cursor at 1, got %d", d.itemCursor)
 	}
 
 	// Move cursor down at end — should stay.
 	d.AgentCursorDown(len(p.Agents))
-	if d.agentCursor != 1 {
-		t.Errorf("expected cursor to stay at 1, got %d", d.agentCursor)
+	if d.itemCursor != 1 {
+		t.Errorf("expected cursor to stay at 1, got %d", d.itemCursor)
 	}
 
 	// Move cursor up.
 	d.AgentCursorUp()
-	if d.agentCursor != 0 {
-		t.Errorf("expected cursor at 0, got %d", d.agentCursor)
+	if d.itemCursor != 0 {
+		t.Errorf("expected cursor at 0, got %d", d.itemCursor)
 	}
 
-	// Move cursor up past top.
+	// Move cursor up at top — stays at 0.
 	d.AgentCursorUp()
-	if d.agentCursor != -1 {
-		t.Errorf("expected cursor at -1 (unfocused), got %d", d.agentCursor)
+	if d.itemCursor != 0 {
+		t.Errorf("expected cursor at 0 (clamped), got %d", d.itemCursor)
 	}
 }
 
 func TestDetail_ExpandCollapse(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	p := testPromptWithAgents()
 
-	// Focus first agent.
-	d.AgentCursorDown(len(p.Agents))
+	// Items: 0=agent-0, 1=agent-1 (no prompt-level tool calls in test fixture).
+	d.itemCursor = 0
+	_, agentIdx := ResolveItem(p, d.itemCursor)
+	if agentIdx != 0 {
+		t.Fatalf("expected agent index 0 at itemCursor 0, got %d", agentIdx)
+	}
 
 	// Expand.
-	ok := d.ExpandAgent(p.Agents)
+	ok := d.ExpandAgent(p.Agents, agentIdx)
 	if !ok {
 		t.Fatal("expected ExpandAgent to succeed")
 	}
@@ -171,11 +175,11 @@ func TestDetail_ExpandCollapse(t *testing.T) {
 }
 
 func TestDetail_ExpandedView_ToolCallList(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	p := testPromptWithAgents()
 
 	d.AgentCursorDown(len(p.Agents))
-	d.ExpandAgent(p.Agents)
+	d.ExpandAgent(p.Agents, d.itemCursor)
 	v := d.View(p, false)
 
 	// Should show tool calls from the agent.
@@ -188,11 +192,11 @@ func TestDetail_ExpandedView_ToolCallList(t *testing.T) {
 }
 
 func TestDetail_ExpandedView_FileOpCounts(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	p := testPromptWithAgents()
 
 	d.AgentCursorDown(len(p.Agents))
-	d.ExpandAgent(p.Agents)
+	d.ExpandAgent(p.Agents, d.itemCursor)
 	v := d.View(p, false)
 
 	// main.go should show R×1 (one Read).
@@ -202,25 +206,25 @@ func TestDetail_ExpandedView_FileOpCounts(t *testing.T) {
 }
 
 func TestDetail_ExpandNonexistentAgent(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	p := testPromptWithAgents()
 
 	// Try to expand without focusing.
-	ok := d.ExpandAgent(p.Agents)
+	ok := d.ExpandAgent(p.Agents, d.itemCursor)
 	if ok {
 		t.Error("expected ExpandAgent to fail when no agent focused")
 	}
 
 	// Try with empty agents.
-	d.agentCursor = 0
-	ok = d.ExpandAgent(nil)
+	d.itemCursor = 0
+	ok = d.ExpandAgent(nil, 0)
 	if ok {
 		t.Error("expected ExpandAgent to fail with nil agents")
 	}
 }
 
 func TestDetail_ExpandStalePathRecovery(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 
 	// Manually set a stale expansion path.
 	d.expandedPath = []string{"nonexistent-toolu"}
@@ -243,27 +247,27 @@ func TestDetail_ExpandStalePathRecovery(t *testing.T) {
 }
 
 func TestDetail_ResetExpansion(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 
 	d.expandedPath = []string{"toolu-001"}
-	d.agentCursor = 1
+	d.itemCursor = 1
 	d.ResetExpansion()
 
 	if d.IsAgentExpanded() {
 		t.Error("expected expansion to be cleared")
 	}
-	if d.agentCursor != -1 {
-		t.Errorf("expected agentCursor=-1, got %d", d.agentCursor)
+	if d.itemCursor != -1 {
+		t.Errorf("expected itemCursor=-1, got %d", d.itemCursor)
 	}
 }
 
 func TestDetail_AgentCursorNoAgents(t *testing.T) {
-	d := Detail{Width: 80, Height: 24, agentCursor: -1}
+	d := Detail{Width: 80, Height: 24, itemCursor: -1}
 	// Should not panic with 0 agents.
 	d.AgentCursorDown(0)
 	d.AgentCursorUp()
-	if d.agentCursor != -1 {
-		t.Errorf("expected cursor -1, got %d", d.agentCursor)
+	if d.itemCursor != -1 {
+		t.Errorf("expected cursor -1, got %d", d.itemCursor)
 	}
 }
 
@@ -290,11 +294,11 @@ func TestDetail_NestedAgentExpansion(t *testing.T) {
 		Agents:    []*model.AgentNode{parent},
 	}
 
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 
 	// Expand parent.
 	d.AgentCursorDown(1)
-	d.ExpandAgent(p.Agents)
+	d.ExpandAgent(p.Agents, d.itemCursor)
 	v := d.View(p, false)
 	if !strings.Contains(v, "Nested agents") {
 		t.Error("expected nested agents section in expanded parent")
@@ -305,7 +309,7 @@ func TestDetail_NestedAgentExpansion(t *testing.T) {
 }
 
 func TestDetail_ComparisonView(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	p := testPromptWithAgents()
 
 	// Set comparison content.
@@ -335,7 +339,7 @@ func TestDetail_ComparisonView(t *testing.T) {
 }
 
 func TestDetail_ComparisonPersistsAcrossPromptChange(t *testing.T) {
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	d.SetComparison("comparison content")
 
 	// ResetExpansion should NOT clear comparison.
@@ -346,7 +350,7 @@ func TestDetail_ComparisonPersistsAcrossPromptChange(t *testing.T) {
 }
 
 func TestDetail_ZeroWidthHeight(t *testing.T) {
-	d := Detail{Width: 0, Height: 0, agentCursor: -1}
+	d := Detail{Width: 0, Height: 0, itemCursor: -1}
 	p := testPromptWithAgents()
 	// Should not panic.
 	_ = d.View(p, false)
@@ -365,7 +369,7 @@ func TestDetail_RenderDeterministic(t *testing.T) {
 			{Type: model.ToolRead, Path: "b.go"},
 		},
 	}
-	d := Detail{Width: 80, Height: 80, agentCursor: -1}
+	d := Detail{Width: 80, Height: 80, itemCursor: -1}
 	var first string
 	for i := 0; i < 20; i++ {
 		v := d.View(p, false)
@@ -393,9 +397,9 @@ func TestDetail_ExpandedViewRunningAgent(t *testing.T) {
 		},
 	}
 
-	d := Detail{Width: 80, Height: 40, agentCursor: -1}
+	d := Detail{Width: 80, Height: 40, itemCursor: -1}
 	d.AgentCursorDown(1)
-	d.ExpandAgent(p.Agents)
+	d.ExpandAgent(p.Agents, d.itemCursor)
 	v := d.View(p, true)
 
 	if !strings.Contains(v, "running") {

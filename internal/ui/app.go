@@ -313,7 +313,7 @@ func (a App) updateTurns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Disengage auto-follow — the user is drilling into a specific turn.
 			a.timeline.autoFollow = false
 			if len(selected.Agents) > 0 {
-				a.timeline.detail.agentCursor = 0
+				a.timeline.detail.itemCursor = 0
 			}
 		}
 		return a, nil
@@ -348,14 +348,13 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		if a.timeline.detail.IsAgentFocused() {
-			a.timeline.detail.agentCursor = -1
+			a.timeline.detail.itemCursor = -1
 			return a, nil
 		}
 		// Return focus to the left pane (turns list).
 		a.timeline.detail.HasFocus = false
 		return a, nil
 	case "enter":
-		// If viewing a tool call detail, no further drill-in.
 		if a.timeline.detail.IsDrilledIntoToolCall() {
 			return a, nil
 		}
@@ -368,18 +367,30 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if ag == nil {
 				return a, nil
 			}
-			// If agent cursor is on a child agent, expand it.
-			if a.timeline.detail.IsAgentFocused() && len(ag.Children) > 0 {
-				a.timeline.detail.ExpandAgent(ag.Children)
-				return a, nil
+			// Inside expanded agent: cursor navigates tool calls + children.
+			cursor := a.timeline.detail.itemCursor
+			if cursor >= 0 && cursor < len(ag.ToolCalls) {
+				// Drill into a tool call.
+				var b strings.Builder
+				a.timeline.detail.renderToolCallDetail(&b, selected, ag.ToolCalls[cursor], a.timeline.detail.Width)
+				a.timeline.detail.DrillIntoToolCall(b.String())
+			} else {
+				childIdx := cursor - len(ag.ToolCalls)
+				if childIdx >= 0 && childIdx < len(ag.Children) {
+					a.timeline.detail.ExpandAgent(ag.Children, childIdx)
+				}
 			}
-			// Otherwise, drill into the focused tool call within the agent.
-			if a.timeline.detail.agentCursor >= 0 && a.timeline.detail.agentCursor < len(ag.ToolCalls) {
-				a.timeline.detail.DrillIntoToolCall(ag.ToolCalls[a.timeline.detail.agentCursor])
-				return a, nil
+		} else {
+			// At prompt level: resolve what the cursor points at.
+			tc, agentIdx := ResolveItem(selected, a.timeline.detail.itemCursor)
+			if tc != nil {
+				// Drill into tool call.
+				var b strings.Builder
+				a.timeline.detail.renderToolCallDetail(&b, selected, tc, a.timeline.detail.Width)
+				a.timeline.detail.DrillIntoToolCall(b.String())
+			} else if agentIdx >= 0 {
+				a.timeline.detail.ExpandAgent(selected.Agents, agentIdx)
 			}
-		} else if a.timeline.detail.IsAgentFocused() {
-			a.timeline.detail.ExpandAgent(selected.Agents)
 		}
 		return a, nil
 	case "j", "down":
@@ -394,14 +405,10 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.timeline.detail.IsAgentExpanded() {
 			ag := a.timeline.detail.resolveExpandedAgent(selected)
 			if ag != nil {
-				// Navigate tool calls + child agents within the expanded agent.
-				totalItems := len(ag.ToolCalls) + len(ag.Children)
-				if totalItems > 0 {
-					a.timeline.detail.AgentCursorDown(totalItems)
-				}
+				a.timeline.detail.AgentCursorDown(len(ag.ToolCalls) + len(ag.Children))
 			}
-		} else if len(selected.Agents) > 0 {
-			a.timeline.detail.AgentCursorDown(len(selected.Agents))
+		} else {
+			a.timeline.detail.AgentCursorDown(ItemCount(selected))
 		}
 		return a, nil
 	case "k", "up":

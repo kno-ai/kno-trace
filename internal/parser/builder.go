@@ -113,6 +113,17 @@ func BuildSession(events []*RawEvent, cfg *config.Config) *model.Session {
 				}
 			}
 
+			// Extract response text from text blocks (last assistant message wins).
+			var textParts []string
+			for _, block := range evt.Message.Content {
+				if block.Type == "text" && block.Text != "" {
+					textParts = append(textParts, block.Text)
+				}
+			}
+			if len(textParts) > 0 {
+				currentPrompt.ResponseText = strings.Join(textParts, "\n")
+			}
+
 			// Extract tool_use blocks as ToolCalls.
 			for _, block := range evt.Message.Content {
 				if block.Type != "tool_use" {
@@ -481,6 +492,17 @@ func RebuildActivePrompt(s *model.Session, events []*RawEvent, startIdx int, cfg
 			}
 
 			// Extract tool_use blocks as ToolCalls.
+			// Extract response text.
+			var textParts []string
+			for _, block := range evt.Message.Content {
+				if block.Type == "text" && block.Text != "" {
+					textParts = append(textParts, block.Text)
+				}
+			}
+			if len(textParts) > 0 {
+				currentPrompt.ResponseText = strings.Join(textParts, "\n")
+			}
+
 			for _, block := range evt.Message.Content {
 				if block.Type != "tool_use" {
 					continue

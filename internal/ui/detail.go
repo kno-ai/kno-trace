@@ -18,18 +18,19 @@ type Detail struct {
 	// HasFocus is true when the detail pane is the active pane.
 	HasFocus bool
 
+	// itemCursor indexes into the detail's navigable items (tool calls + agents).
+	// -1 = no item focused. Set to 0 when detail gains focus.
+	itemCursor int
+
 	// Agent expansion state.
 	expandedPath    []string
 	expandedCursors []int
 
-	// agentCursor tracks which agent is focused. -1 = no agent focused.
-	agentCursor int
+	// drillIn holds the content being drilled into (tool call detail, etc.).
+	// Non-empty = showing drill-in view.
+	drillIn string
 
-	// toolCallDrillIn is set when the user drills into a specific tool call.
-	toolCallDrillIn *model.ToolCall
-
-	// comparison holds the rendered comparison content when comparing selected turns.
-	// Non-empty = showing comparison view. Cleared by esc.
+	// comparison holds the rendered comparison content.
 	comparison string
 }
 
@@ -51,10 +52,9 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 		return d.applyScroll(d.comparison)
 	}
 
-	// Tool call drill-in: show full detail for a specific tool call.
-	if d.toolCallDrillIn != nil {
-		d.renderToolCallDetail(&b, p, d.toolCallDrillIn, w)
-		return d.applyScroll(b.String())
+	// Drill-in: show pre-rendered detail content.
+	if d.drillIn != "" {
+		return d.applyScroll(d.drillIn)
 	}
 
 	// Agent expansion: show agent detail.
@@ -65,7 +65,7 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 			return d.applyScroll(b.String())
 		}
 		d.expandedPath = nil
-		d.agentCursor = -1
+		d.itemCursor = -1
 	}
 
 	// Header: index, time, duration, model, tokens, context%.
@@ -82,19 +82,139 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 		b.WriteString("\n\n")
 	}
 
+	// Response text (Claude's answer).
+	if p.ResponseText != "" {
+		resp := p.ResponseText
+		if len(resp) > w*5 {
+			resp = resp[:w*5] + "..."
+		}
+		b.WriteString(DimStyle.Render(resp))
+		b.WriteString("\n\n")
+	}
+
 	// Warnings.
 	d.renderWarnings(&b, p)
 
-	// Tool calls.
-	d.renderToolCalls(&b, p)
-
-	// Agents — with cursor for selection.
-	d.renderAgentsWithCursor(&b, p, isLive)
+	// Tool calls and agents as a navigable item list.
+	d.renderItems(&b, p, isLive)
 
 	// File activity section.
 	d.renderFileActivity(&b, p)
 
 	return d.applyScroll(b.String())
+}
+
+// ItemCount returns the number of navigable items for a prompt.
+// Order: tool calls (non-Agent) then agents.
+func ItemCount(p *model.Prompt) int {
+	if p == nil {
+		return 0
+	}
+	n := 0
+	for _, tc := range p.ToolCalls {
+		if tc.Type != model.ToolAgent {
+			n++
+		}
+	}
+	n += len(p.Agents)
+	return n
+}
+
+// ResolveItem maps an itemCursor position to either a tool call or an agent index.
+// Returns (toolCall, agentIndex). agentIndex is -1 when pointing at a tool call.
+// Both nil/-1 if cursor is out of range.
+func ResolveItem(p *model.Prompt, cursor int) (*model.ToolCall, int) {
+	if p == nil || cursor < 0 {
+		return nil, -1
+	}
+	idx := 0
+	for _, tc := range p.ToolCalls {
+		if tc.Type == model.ToolAgent {
+			continue
+		}
+		if idx == cursor {
+			return tc, -1
+		}
+		idx++
+	}
+	agentIdx := cursor - idx
+	if agentIdx >= 0 && agentIdx < len(p.Agents) {
+		return nil, agentIdx
+	}
+	return nil, -1
+}
+
+func (d *Detail) IsAgentFocused() bool {
+	return d.itemCursor >= 0
+}
+
+func (d *Detail) IsAgentExpanded() bool {
+	return len(d.expandedPath) > 0
+}
+
+func (d *Detail) IsDrilledIntoToolCall() bool {
+	return d.drillIn != ""
+}
+
+// ExpandAgent expands the agent at agentIdx.
+func (d *Detail) ExpandAgent(agents []*model.AgentNode, agentIdx int) bool {
+	if agentIdx < 0 || agentIdx >= len(agents) {
+		return false
+	}
+	ag := agents[agentIdx]
+	d.expandedPath = append(d.expandedPath, ag.ToolUseID)
+	d.expandedCursors = append(d.expandedCursors, d.itemCursor)
+	d.itemCursor = 0
+	d.Offset = 0
+	return true
+}
+
+func (d *Detail) CollapseAgent() bool {
+	if len(d.expandedPath) == 0 {
+		return false
+	}
+	d.expandedPath = d.expandedPath[:len(d.expandedPath)-1]
+	if len(d.expandedCursors) > 0 {
+		d.itemCursor = d.expandedCursors[len(d.expandedCursors)-1]
+		d.expandedCursors = d.expandedCursors[:len(d.expandedCursors)-1]
+	} else {
+		d.itemCursor = 0
+	}
+	d.Offset = 0
+	return true
+}
+
+func (d *Detail) DrillIntoToolCall(content string) {
+	d.drillIn = content
+	d.Offset = 0
+}
+
+func (d *Detail) ExitToolCallDrillIn() {
+	d.drillIn = ""
+	d.Offset = 0
+}
+
+func (d *Detail) AgentCursorDown(count int) {
+	if count == 0 {
+		return
+	}
+	if d.itemCursor < count-1 {
+		d.itemCursor++
+	}
+}
+
+func (d *Detail) AgentCursorUp() {
+	if d.itemCursor > 0 {
+		d.itemCursor--
+	}
+}
+
+func (d *Detail) ResetExpansion() {
+	d.expandedPath = nil
+	d.expandedCursors = nil
+	d.itemCursor = -1
+	d.drillIn = ""
+	d.HasFocus = false
 }
 
 // applyScroll handles vertical scrolling within the detail content.
@@ -120,79 +240,6 @@ func (d *Detail) applyScroll(content string) string {
 	return strings.Join(lines, "\n")
 }
 
-// IsAgentFocused returns true if an agent is currently focused by the cursor.
-func (d *Detail) IsAgentFocused() bool {
-	return d.agentCursor >= 0
-}
-
-// IsAgentExpanded returns true if an agent is currently expanded (drilled into).
-func (d *Detail) IsAgentExpanded() bool {
-	return len(d.expandedPath) > 0
-}
-
-// ExpandAgent expands the currently focused agent (enter key).
-// Returns true if an agent was expanded.
-func (d *Detail) ExpandAgent(agents []*model.AgentNode) bool {
-	if d.agentCursor < 0 || d.agentCursor >= len(agents) {
-		return false
-	}
-	ag := agents[d.agentCursor]
-	d.expandedPath = append(d.expandedPath, ag.ToolUseID)
-	// Save cursor position so collapse restores it.
-	d.expandedCursors = append(d.expandedCursors, d.agentCursor)
-	d.agentCursor = -1
-	d.Offset = 0
-	return true
-}
-
-// CollapseAgent pops one level of agent expansion (esc key).
-// Restores the agent cursor to the position before expansion, so the user
-// lands back on the agent they just collapsed from.
-func (d *Detail) CollapseAgent() bool {
-	if len(d.expandedPath) == 0 {
-		return false
-	}
-	d.expandedPath = d.expandedPath[:len(d.expandedPath)-1]
-	// Restore cursor from the saved stack.
-	if len(d.expandedCursors) > 0 {
-		d.agentCursor = d.expandedCursors[len(d.expandedCursors)-1]
-		d.expandedCursors = d.expandedCursors[:len(d.expandedCursors)-1]
-	} else {
-		d.agentCursor = 0
-	}
-	d.Offset = 0
-	return true
-}
-
-// AgentCursorDown moves the agent cursor down within the agent list.
-func (d *Detail) AgentCursorDown(agentCount int) {
-	if agentCount == 0 {
-		return
-	}
-	if d.agentCursor < agentCount-1 {
-		d.agentCursor++
-	}
-}
-
-// AgentCursorUp moves the agent cursor up. -1 means exiting agent focus.
-func (d *Detail) AgentCursorUp() {
-	if d.agentCursor > -1 {
-		d.agentCursor--
-	}
-}
-
-// ResetExpansion clears all agent expansion state.
-// Called when the user navigates to a different prompt.
-func (d *Detail) ResetExpansion() {
-	d.expandedPath = nil
-	d.expandedCursors = nil
-	d.agentCursor = -1
-	d.toolCallDrillIn = nil
-	// Note: comparison is NOT cleared here — it persists while browsing turns.
-	// Cleared explicitly by esc from comparison or ClearComparison.
-	d.HasFocus = false
-}
-
 // SetComparison sets the comparison content to display.
 func (d *Detail) SetComparison(content string) {
 	d.comparison = content
@@ -207,23 +254,6 @@ func (d *Detail) IsComparing() bool {
 // ClearComparison exits comparison mode.
 func (d *Detail) ClearComparison() {
 	d.comparison = ""
-	d.Offset = 0
-}
-
-// DrillIntoToolCall sets the detail to show a specific tool call's full detail.
-func (d *Detail) DrillIntoToolCall(tc *model.ToolCall) {
-	d.toolCallDrillIn = tc
-	d.Offset = 0
-}
-
-// IsDrilledIntoToolCall returns true if viewing a tool call detail.
-func (d *Detail) IsDrilledIntoToolCall() bool {
-	return d.toolCallDrillIn != nil
-}
-
-// ExitToolCallDrillIn returns to the turn-level or agent-level view.
-func (d *Detail) ExitToolCallDrillIn() {
-	d.toolCallDrillIn = nil
 	d.Offset = 0
 }
 
@@ -334,12 +364,10 @@ func (d *Detail) renderWarnings(b *strings.Builder, p *model.Prompt) {
 	}
 }
 
-func (d *Detail) renderToolCalls(b *strings.Builder, p *model.Prompt) {
-	for _, tc := range p.ToolCalls {
-		if tc.Type == model.ToolAgent {
-			continue // Rendered separately in agents section.
-		}
-		d.renderOneToolCall(b, tc, "  ")
+// renderToolCalls renders tool calls without a cursor (used by expanded agent view).
+func (d *Detail) renderToolCalls(b *strings.Builder, tcs []*model.ToolCall) {
+	for _, tc := range tcs {
+		d.renderOneToolCall(b, tc, "    ")
 	}
 }
 
@@ -413,12 +441,35 @@ func (d *Detail) renderOneToolCall(b *strings.Builder, tc *model.ToolCall, inden
 	}
 }
 
-// renderAgentsWithCursor renders agents with a selection cursor for enter-to-expand.
-func (d *Detail) renderAgentsWithCursor(b *strings.Builder, p *model.Prompt, isLive bool) {
-	for i, agent := range p.Agents {
-		isFocused := d.agentCursor == i
-		d.renderOneAgent(b, agent, p, isLive, isFocused, "")
+// renderItems renders tool calls and agents as a navigable list with cursor.
+func (d *Detail) renderItems(b *strings.Builder, p *model.Prompt, isLive bool) {
+	itemIdx := 0
+
+	// Tool calls (non-Agent).
+	for _, tc := range p.ToolCalls {
+		if tc.Type == model.ToolAgent {
+			continue
+		}
+		isFocused := d.HasFocus && d.itemCursor == itemIdx
+		prefix := "  "
+		if isFocused {
+			prefix = SelectedStyle.Render("> ")
+		}
+		d.renderOneToolCallWithPrefix(b, tc, prefix)
+		itemIdx++
 	}
+
+	// Agents.
+	for _, ag := range p.Agents {
+		isFocused := d.HasFocus && d.itemCursor == itemIdx
+		d.renderOneAgent(b, ag, p, isLive, isFocused, "")
+		itemIdx++
+	}
+}
+
+// renderOneToolCallWithPrefix renders a tool call line with a custom prefix (for cursor).
+func (d *Detail) renderOneToolCallWithPrefix(b *strings.Builder, tc *model.ToolCall, prefix string) {
+	d.renderOneToolCall(b, tc, prefix)
 }
 
 // renderExpandedAgent renders the detailed view of an expanded agent.
@@ -531,30 +582,7 @@ func (d *Detail) renderExpandedAgent(b *strings.Builder, p *model.Prompt, ag *mo
 	// Full tool call list.
 	if len(ag.ToolCalls) > 0 {
 		b.WriteString(MutedStyle.Render("  Tool calls:") + "\n")
-		for _, tc := range ag.ToolCalls {
-			icon := toolIcon(tc.Type)
-			line := icon + " "
-			switch tc.Type {
-			case model.ToolWrite:
-				delta := fmt.Sprintf("+%d", strings.Count(tc.Content, "\n"))
-				line += fmt.Sprintf("%s %s", tc.Path, DimStyle.Render(delta))
-			case model.ToolEdit:
-				added := strings.Count(tc.NewStr, "\n")
-				removed := strings.Count(tc.OldStr, "\n")
-				line += fmt.Sprintf("%s %s", tc.Path, DimStyle.Render(fmt.Sprintf("+%d -%d", added, removed)))
-			case model.ToolRead:
-				line += tc.Path
-			case model.ToolBash:
-				line += Truncate(tc.Command, w-15)
-			case model.ToolGlob, model.ToolGrep:
-				line += DimStyle.Render(tc.Path)
-			case model.ToolMCP:
-				line += fmt.Sprintf("%s/%s", tc.MCPServerName, tc.MCPToolName)
-			default:
-				line += DimStyle.Render(string(tc.Type))
-			}
-			b.WriteString("    " + line + "\n")
-		}
+		d.renderToolCalls(b, ag.ToolCalls)
 	} else if ag.Status == model.AgentRunning {
 		b.WriteString(DimStyle.Render("  Waiting for tool calls...") + "\n")
 	}
@@ -563,7 +591,7 @@ func (d *Detail) renderExpandedAgent(b *strings.Builder, p *model.Prompt, ag *mo
 	if len(ag.Children) > 0 {
 		b.WriteString("\n" + MutedStyle.Render("  Nested agents:") + "\n")
 		for i, child := range ag.Children {
-			isFocused := d.agentCursor == i
+			isFocused := d.itemCursor == i
 			d.renderOneAgent(b, child, p, isLive, isFocused, "  ")
 		}
 	}

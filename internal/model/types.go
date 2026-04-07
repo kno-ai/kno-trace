@@ -23,8 +23,9 @@ type Session struct {
 // Prompt represents one human turn and everything Claude did in response.
 // Bounded by: start = this human message, end = next human message (or EOF).
 type Prompt struct {
-	Index       int
-	HumanText   string
+	Index        int
+	HumanText    string
+	ResponseText string // assistant's text response (from last assistant message text blocks)
 	StartTime   time.Time
 	EndTime     time.Time // zero if this is the active/live prompt
 	ModelName   string    // model from last assistant message in this prompt; may differ per prompt

@@ -38,7 +38,7 @@ func newTimeline(session *model.Session) timelineModel {
 	return timelineModel{
 		session:  session,
 		list:     NewPromptList(session),
-		detail:   Detail{agentCursor: -1},
+		detail:   Detail{itemCursor: -1},
 		splitPct: 40,
 	}
 }
