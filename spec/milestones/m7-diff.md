@@ -1,12 +1,24 @@
-# M7: File Intelligence — Replay Engine, Hot Files, File History
+# M7: File Intelligence — Replay Engine, Hot Files, Session Views
 
 **Prerequisites:** M6 complete (unified navigation, inline diffs, detail drill-in working).
 
-**Goal:** Answer "what happened to this file?" and "which files are getting thrashed?" — directly from the left pane. The replay engine builds session-wide file histories. The stacked left pane shows hot files alongside turns. Drilling into a file shows its complete story.
+**Goal:** Answer "what happened to this file?" and "which files are getting thrashed?" The replay engine builds session-wide file histories. The stacked left pane shows hot files alongside turns. Session-level views (summary, heatmap) provide high-level insights.
 
-**Deliverable:** A developer glances at the left pane and immediately sees which files have the most activity. They select a file and see every operation on it across the session — with diffs, agent attribution, and timestamps. This is the heatmap vision, integrated into the two-pane layout.
+**Deliverable:** A developer enters a session and immediately sees a summary with hot files and intensity bars. They can switch to a heatmap grid (files × prompts) to spot patterns. They select a file to see its complete story, or a turn to see what happened.
 
-**Use cases served:** UC2 (what happened to this file?), UC6 (which files are getting thrashed?)
+**Use cases served:** UC2 (what happened to this file?), UC6 (which files are getting thrashed?), UC7 (quickly check a past session)
+
+---
+
+## Navigation Model
+
+The detail pane has three top-level modes based on what's selected:
+
+1. **Session view** (default) — shown when no turn or file is selected. This is the landing page for a session. May have multiple sub-views (summary, heatmap) navigable with tab or keys.
+2. **Turn detail** — shown when a turn is selected from the turn list.
+3. **File history** — shown when a file is selected from the file list.
+
+Esc from turn detail or file history → back to session view. The session view is the "home" of a session.
 
 ---
 
@@ -14,56 +26,105 @@
 
 ### Layer 1: Replay engine
 
-Build `internal/replay/engine.go` — the foundation for file intelligence.
+Build `internal/replay/engine.go` — the foundation for all file intelligence.
 
-- **FileHistory per file**: collect all Write/Edit/Read operations from `Prompt.ToolCalls` and `Prompt.Agents[*].ToolCalls`, interleaved by timestamp.
-- **Agent attribution**: each entry tracks the source agent (empty = parent).
+- **FileHistory per file**: collect all Write/Edit/Read operations from `Prompt.ToolCalls` and `Prompt.Agents[*].ToolCalls` (recursing into nested agents), interleaved by timestamp.
+- **Agent attribution**: each entry tracks the source agent label (empty = parent).
+- **PromptIdx per entry**: which prompt this operation happened in — needed for the heatmap grid.
 - **HeatScore**: count of distinct prompts with Write or Edit ops on the file.
 - **Session-wide**: built once after full parse, updated incrementally during live sessions.
 - **`ListFiles()`**: returns all files sorted by HeatScore descending.
 - **`GetFileHistory(path)`**: returns the FileHistory for a file.
+- **`GetHeatmap()`**: returns a structure suitable for rendering the 2D grid (files × prompts).
 - Bounded: WriteSnapshots capped per config.
 
-**Checkpoint:** `--dump` output shows a "Hot files" section listing files by activity.
+**Checkpoint:** `--dump` output shows a "Hot files" section listing files by activity with per-prompt touch indicators.
 
-### Layer 2: Stacked left pane — turns + hot files
+### Layer 2: Stacked left pane — turns + files
 
-Split the left pane vertically: turn list on top, hot files list on bottom.
+Split the left pane vertically: turn list on top, file list on bottom.
 
-- **Turn list**: compact, shows ~8-10 most recent turns. Cursor at bottom by default for completed sessions (most recent first in view).
-- **File list**: all files touched in the session, sorted by HeatScore. Shows path + op badges (W×N E×M). Updated live as agent tool calls arrive.
-- **Tab** switches focus between the two lists. Active list has brighter header.
-- **j/k** navigates within the focused list. **enter** drills in:
-  - Turn list enter → detail pane shows turn detail (existing behavior)
-  - File list enter → detail pane shows file history
-- **Default split**: left pane 30% of terminal width (down from 40%). Turn list gets 60% of left pane height, files get 40%.
+- **Turn list**: compact, cursor starts at bottom for completed sessions (most recent visible).
+- **File list**: all files touched in the session, sorted by HeatScore. Path + op badges (W×N E×M).
+- **Tab** switches focus between the two lists. Active list has distinct header.
+- **j/k** navigates within the focused list.
+- **enter** from turn list → turn detail in detail pane. **enter** from file list → file history in detail pane.
+- **Default split**: left pane 30% width. Turn list 60% of left height, files 40%.
+- When neither list has an item selected (first entering a session), the detail pane shows the session view.
 
-**Checkpoint:** Open a session. See turns at top-left, hot files at bottom-left. Tab to files. Enter on a file → see its history in the detail pane.
+**Checkpoint:** Open a session. See turns at top-left, hot files at bottom-left. Tab between them. Detail shows session summary by default.
 
-### Layer 3: File history view in detail pane
+### Layer 3: Session summary view
 
-When entering a file from the file list, the detail pane shows:
+The default detail pane when entering a session (before selecting a turn or file).
 
-- **File path header** with total op count and heat score
-- **Chronological entry list**: every operation on this file across the session
+- **Session header**: project name, model, duration, total tokens, prompt count, context%
+- **Hot files section**: top N files by HeatScore with intensity bars (█ blocks proportional to max). Op badges and agent attribution.
+- **Agent summary**: total spawned, parallel, failed
+- **Quick stats**: total files touched, total edits, total writes
+
+This is the "dashboard glance" — you see the shape of the session immediately.
+
+**Checkpoint:** Enter a session. See the summary with intensity bars. Select a turn → detail changes. Esc → back to summary.
+
+### Layer 4: File history view
+
+When selecting a file from the file list, the detail pane shows:
+
+- **File path header** with total op count, HeatScore, prompt range
+- **Chronological entry list**: every operation across the session
   - Per entry: turn index, timestamp, op type (W/E/R), agent label (if from agent)
-  - Edit entries: inline mini-diff showing what changed
+  - Edit entries: inline mini-diff
   - Write entries: line count delta
 - **Navigable**: j/k moves between entries, enter on an Edit shows full diff
-- **esc** returns to the file list
+- **esc** returns to session view
 
-**Checkpoint:** Navigate to a hot file. See its complete history with diffs at each step. Drill into an Edit for the full diff. Esc back.
+**Checkpoint:** Select a hot file. See its complete history with diffs. Drill into an edit. Esc back.
 
-### Layer 4: Live updates to file list
+### Layer 5: Heatmap grid (files × prompts)
 
-During live sessions, the file list updates as new tool calls arrive:
+A 2D grid view accessible from the session view (e.g., `h` key or tab within session view):
 
-- New files appear in the list when first touched
-- HeatScore and op counts update as edits/writes happen
-- Files re-sort by activity as heat changes
-- Agent-attributed ops show ⬡ indicator
+```
+          #1  #2  #3  #4  #5  #6  #7  #8
+app.go     ·   E   ·   E   E   ·   E   W
+detail.go  ·   ·   W   E   E   E   E   E
+tree.go    ·   ·   ·   ·   E   ·   ·   ·
+config.go  W   ·   ·   ·   ·   ·   ·   ·
+```
 
-**Checkpoint:** Run alongside Claude Code. Watch the file list grow and re-sort as agents work.
+- Rows = files (sorted by total activity)
+- Columns = prompts (chronological)
+- Cells = operation type (W/E/R/· for none)
+- Patterns visible: files thrashed across many prompts (long rows of activity), recent focus (right-heavy), setup files (left-only)
+- Inspired by [kno-lens](https://marketplace.visualstudio.com/items?itemName=kno-ai.kno-lens) file heatmap
+- Scrollable for large sessions
+- Enter on a cell → jump to that turn's detail for that file
+
+**Checkpoint:** Enter a session. See summary. Press `h` → see heatmap grid. Spot a thrashed file. Enter on a cell → see the edit.
+
+### Layer 6: Live updates
+
+During live sessions:
+- File list updates as new tool calls arrive (new files appear, heat re-sorts)
+- Session summary hot files update in real time
+- Heatmap grid adds columns as new prompts seal
+
+---
+
+## Session-Level Views — Extensibility
+
+The session view is a container for session-level insights. M7 builds two:
+1. **Summary** (default) — stats + hot files with intensity bars
+2. **Heatmap** — 2D files × prompts grid
+
+Future session views could include:
+- Token burn rate over time
+- Context% trajectory
+- Agent activity timeline
+- Cost analysis
+
+These would be additional tabs/modes within the session view, all accessible before drilling into any specific turn or file.
 
 ---
 
@@ -71,33 +132,34 @@ During live sessions, the file list updates as new tool calls arrive:
 
 ### Replay engine
 - FileHistory built correctly from test fixtures
-- Agent tool calls included and attributed
-- HeatScore reflects session-wide activity
+- Agent tool calls included and attributed (including nested agents)
+- HeatScore reflects session-wide write+edit activity
 - ListFiles sorted by HeatScore descending
-- WriteSnapshots bounded by config
+- GetHeatmap returns correct files × prompts matrix
 
 ### Stacked left pane
 - Turn list and file list both visible and navigable
 - Tab switches focus between them
 - Turn list starts at bottom for completed sessions
-- File list sorted by activity
+- File list sorted by HeatScore
 - Left pane default 30% width
+
+### Session summary
+- Shows on first entering a session (default detail view)
+- Hot files with intensity bars proportional to max HeatScore
+- Esc from turn/file detail returns to session summary
 
 ### File history
 - Shows all operations chronologically with agent attribution
 - Edit entries show inline diffs
-- Navigable: j/k between entries, enter for full diff
-- Esc returns to file list
+- j/k between entries, enter for full diff, esc back
+
+### Heatmap
+- 2D grid renders correctly (files × prompts)
+- Operation type shown per cell
+- Scrollable for large sessions
+- Enter on cell navigates to relevant detail
 
 ### Live updates
 - File list updates as MsgAgentToolCall arrives
-- HeatScore and sorting update in real time
-- New files appear when first touched
-
----
-
-## Notes
-
-- The replay engine replaces the per-render file activity computation in detail.go's `renderFileActivity`. That function currently rebuilds the file map on every render — the engine builds it once.
-- `GetContentAt(path, promptIdx)` (snapshot reconstruction) is deferred — not needed for file history display since we show per-op diffs from OldStr/NewStr, not reconstructed snapshots.
-- The stacked left pane is a significant layout change but follows the same navigation model (j/k/enter/esc). Tab for switching sub-panels is standard (lazygit uses tab for panel switching).
+- Summary and heatmap update as new prompts seal
