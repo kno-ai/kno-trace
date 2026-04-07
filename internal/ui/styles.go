@@ -9,13 +9,13 @@ import "github.com/charmbracelet/lipgloss"
 var (
 	ColorBg        = lipgloss.Color("#0A0E14")
 	ColorBrandTeal = lipgloss.Color("#4DFFC4")
-	ColorDim       = lipgloss.Color("#555555")
-	ColorMuted     = lipgloss.Color("#888888")
-	ColorWhite     = lipgloss.Color("#FFFFFF")
+	ColorDim       = lipgloss.Color("#555555") // decorative: dividers, patterns, scroll indicators
+	ColorMuted     = lipgloss.Color("#999999") // secondary: metadata, labels, key hints
+	ColorContent   = lipgloss.Color("#BBBBBB") // readable secondary: response text, file paths
+	ColorWhite     = lipgloss.Color("#FFFFFF") // primary: human text, selected items
 	ColorYellow    = lipgloss.Color("#FFD700")
 	ColorRed       = lipgloss.Color("#FF5555")
 	ColorCyan      = lipgloss.Color("#8BE9FD")
-
 )
 
 // AgentColors is an ordered palette for agent attribution in the live ticker.
@@ -58,9 +58,13 @@ var (
 	DimStyle = lipgloss.NewStyle().
 			Foreground(ColorDim)
 
-	// Muted metadata text.
+	// Muted metadata text (labels, hints, counts).
 	MutedStyle = lipgloss.NewStyle().
 			Foreground(ColorMuted)
+
+	// Content text — readable secondary (response text, file paths, descriptions).
+	ContentStyle = lipgloss.NewStyle().
+			Foreground(ColorContent)
 
 	// Date group headers in the picker.
 	DateHeaderStyle = lipgloss.NewStyle().

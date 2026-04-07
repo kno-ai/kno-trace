@@ -99,7 +99,7 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 		if len(resp) > w*5 {
 			resp = resp[:w*5] + "..."
 		}
-		b.WriteString(MutedStyle.Render(resp))
+		b.WriteString(ContentStyle.Render(resp))
 		b.WriteString("\n\n")
 	}
 
@@ -763,7 +763,7 @@ func (d *Detail) renderOneAgent(b *strings.Builder, agent *model.AgentNode, p *m
 			}
 			b.WriteString(indent + "    " + DimStyle.Render("→ "+latestIcon+" "+latestPath) + "\n")
 		} else if desc != "" {
-			b.WriteString(indent + "    " + DimStyle.Render(desc) + "\n")
+			b.WriteString(indent + "    " + ContentStyle.Render(desc) + "\n")
 		}
 
 	case model.AgentSucceeded:
@@ -793,7 +793,7 @@ func (d *Detail) renderOneAgent(b *strings.Builder, agent *model.AgentNode, p *m
 
 	default:
 		b.WriteString(fmt.Sprintf("%s⬡ %s (%s) — %s%s\n",
-			prefix, agent.Label, typeLabel, DimStyle.Render(desc), suffix))
+			prefix, agent.Label, typeLabel, ContentStyle.Render(desc), suffix))
 	}
 }
 
@@ -823,10 +823,10 @@ func (d *Detail) renderToolCallDetail(b *strings.Builder, p *model.Prompt, tc *m
 			lines := strings.Split(tc.Content, "\n")
 			shown := min(20, len(lines))
 			for _, line := range lines[:shown] {
-				b.WriteString("  " + DimStyle.Render(Truncate(line, w-4)) + "\n")
+				b.WriteString("  " + ContentStyle.Render(Truncate(line, w-4)) + "\n")
 			}
 			if len(lines) > shown {
-				b.WriteString(DimStyle.Render(fmt.Sprintf("  ... +%d more lines", len(lines)-shown)) + "\n")
+				b.WriteString(MutedStyle.Render(fmt.Sprintf("  ... +%d more lines", len(lines)-shown)) + "\n")
 			}
 		}
 
@@ -843,7 +843,7 @@ func (d *Detail) renderToolCallDetail(b *strings.Builder, p *model.Prompt, tc *m
 		if tc.Output != "" {
 			b.WriteString(MutedStyle.Render("  Output:") + "\n")
 			for _, line := range strings.Split(tc.Output, "\n") {
-				b.WriteString("  " + DimStyle.Render(Truncate(line, w-4)) + "\n")
+				b.WriteString("  " + ContentStyle.Render(Truncate(line, w-4)) + "\n")
 			}
 		}
 
