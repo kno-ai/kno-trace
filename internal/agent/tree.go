@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -290,16 +291,23 @@ func detectFileConflicts(s *model.Session) {
 			}
 		}
 
-		// Emit warnings for files touched by multiple parallel agents
-		// where at least one performed a write.
+		// Emit warnings in deterministic order (sorted by path).
+		// Map iteration order is random in Go — without sorting, warnings
+		// would shuffle on every re-render.
+		var conflictPaths []string
 		for path, fi := range files {
 			if len(fi.agents) > 1 && fi.hasWriter {
-				prompt.Warnings = append(prompt.Warnings, model.Warning{
-					Type: model.WarnAgentConflict,
-					Message: fmt.Sprintf("file conflict: %s touched by %s",
-						path, strings.Join(fi.agents, ", ")),
-				})
+				conflictPaths = append(conflictPaths, path)
 			}
+		}
+		sort.Strings(conflictPaths)
+		for _, path := range conflictPaths {
+			fi := files[path]
+			prompt.Warnings = append(prompt.Warnings, model.Warning{
+				Type: model.WarnAgentConflict,
+				Message: fmt.Sprintf("file conflict: %s touched by %s",
+					path, strings.Join(fi.agents, ", ")),
+			})
 		}
 	}
 }

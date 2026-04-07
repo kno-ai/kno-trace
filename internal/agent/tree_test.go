@@ -555,6 +555,58 @@ func TestEnrichFromEvents_NoToolCalls(t *testing.T) {
 	}
 }
 
+func TestDetectFileConflicts_DeterministicOrder(t *testing.T) {
+	// Multiple conflicting files should produce warnings in sorted path order.
+	// Run multiple times to verify map iteration randomness doesn't affect output.
+	for attempt := 0; attempt < 10; attempt++ {
+		s := &model.Session{
+			Prompts: []*model.Prompt{{
+				Agents: []*model.AgentNode{
+					{
+						ID:         "a1",
+						Label:      "subagent-1",
+						IsParallel: true,
+						ToolCalls: []*model.ToolCall{
+							{Type: model.ToolEdit, Path: "z_last.go"},
+							{Type: model.ToolEdit, Path: "a_first.go"},
+							{Type: model.ToolEdit, Path: "m_middle.go"},
+						},
+						FilesTouched: []string{"z_last.go", "a_first.go", "m_middle.go"},
+					},
+					{
+						ID:         "a2",
+						Label:      "subagent-2",
+						IsParallel: true,
+						ToolCalls: []*model.ToolCall{
+							{Type: model.ToolEdit, Path: "z_last.go"},
+							{Type: model.ToolEdit, Path: "a_first.go"},
+							{Type: model.ToolEdit, Path: "m_middle.go"},
+						},
+						FilesTouched: []string{"z_last.go", "a_first.go", "m_middle.go"},
+					},
+				},
+			}},
+		}
+
+		detectFileConflicts(s)
+
+		warnings := s.Prompts[0].Warnings
+		if len(warnings) != 3 {
+			t.Fatalf("attempt %d: expected 3 warnings, got %d", attempt, len(warnings))
+		}
+		// Warnings should be in alphabetical path order.
+		if !strings.Contains(warnings[0].Message, "a_first.go") {
+			t.Errorf("attempt %d: first warning should be a_first.go, got: %s", attempt, warnings[0].Message)
+		}
+		if !strings.Contains(warnings[1].Message, "m_middle.go") {
+			t.Errorf("attempt %d: second warning should be m_middle.go, got: %s", attempt, warnings[1].Message)
+		}
+		if !strings.Contains(warnings[2].Message, "z_last.go") {
+			t.Errorf("attempt %d: third warning should be z_last.go, got: %s", attempt, warnings[2].Message)
+		}
+	}
+}
+
 // findAgent finds an agent by ID in a slice.
 func findAgent(agents []*model.AgentNode, id string) *model.AgentNode {
 	for _, a := range agents {

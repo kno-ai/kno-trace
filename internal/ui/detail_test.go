@@ -352,6 +352,31 @@ func TestDetail_ZeroWidthHeight(t *testing.T) {
 	_ = d.View(p, false)
 }
 
+func TestDetail_RenderDeterministic(t *testing.T) {
+	// File activity section uses maps internally. Verify render output is
+	// identical across multiple calls (no map iteration order flicker).
+	p := &model.Prompt{
+		Index:     0,
+		ModelName: "claude-opus-4-6",
+		ToolCalls: []*model.ToolCall{
+			{Type: model.ToolRead, Path: "z.go"},
+			{Type: model.ToolEdit, Path: "a.go", OldStr: "x", NewStr: "y"},
+			{Type: model.ToolWrite, Path: "m.go", Content: "content\n"},
+			{Type: model.ToolRead, Path: "b.go"},
+		},
+	}
+	d := Detail{Width: 80, Height: 80, agentCursor: -1}
+	var first string
+	for i := 0; i < 20; i++ {
+		v := d.View(p, false)
+		if i == 0 {
+			first = v
+		} else if v != first {
+			t.Fatalf("render %d differs from render 0 — non-deterministic", i)
+		}
+	}
+}
+
 func TestDetail_ExpandedViewRunningAgent(t *testing.T) {
 	p := &model.Prompt{
 		Index:     0,
