@@ -306,15 +306,17 @@ func (a App) updateTurns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	case "enter":
-		// Give focus to the detail pane.
+		// Give focus to the detail pane. Scroll to the first navigable item
+		// so the > cursor is immediately visible.
 		selected := a.timeline.list.SelectedPrompt()
 		if selected != nil {
 			a.timeline.detail.HasFocus = true
 			a.timeline.autoFollow = false
-			// Set cursor to first navigable item (tool call or agent).
 			if ItemCount(selected) > 0 {
 				a.timeline.detail.itemCursor = 0
 			}
+			// Scroll will auto-adjust to show the focused item on next render.
+			a.timeline.detail.ScrollToBottom()
 		}
 		return a, nil
 	}

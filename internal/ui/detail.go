@@ -352,7 +352,13 @@ func (d *Detail) renderHeader(b *strings.Builder, p *model.Prompt, isLive bool) 
 		header += "  ⏱ slow"
 	}
 
-	b.WriteString(SelectedStyle.Render(header))
+	// Focus indicator — shows that j/k now navigates items in this pane.
+	if d.HasFocus {
+		b.WriteString(SelectedStyle.Render("▸ " + header))
+		b.WriteString("  " + DimStyle.Render("j/k items · enter drill · esc back"))
+	} else {
+		b.WriteString(SelectedStyle.Render(header))
+	}
 	b.WriteString("\n")
 
 	// Model and tokens.
