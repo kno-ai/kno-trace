@@ -64,6 +64,9 @@ func FormatMiniDiff(oldText, newText string, maxLines int, width int) string {
 	if maxLines <= 0 {
 		maxLines = 4
 	}
+	if width < 20 {
+		width = 20
+	}
 
 	lines := ComputeLineDiff(oldText, newText)
 	if len(lines) == 0 {
@@ -109,6 +112,9 @@ func FormatMiniDiff(oldText, newText string, maxLines int, width int) string {
 
 // FormatFullDiff renders a complete diff with context lines for drill-in views.
 func FormatFullDiff(oldText, newText string, width int) string {
+	if width < 20 {
+		width = 20
+	}
 	lines := ComputeLineDiff(oldText, newText)
 	if len(lines) == 0 {
 		return "  (no changes)\n"

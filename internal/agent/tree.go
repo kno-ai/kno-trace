@@ -121,6 +121,13 @@ func EnrichFromFile(agent *model.AgentNode, path string, cfg *config.Config) err
 // enrichFromEvents populates an agent node from parsed subagent events.
 // Exported for use by the live subagent tailer (layer 2).
 func enrichFromEvents(agent *model.AgentNode, events []*parser.RawEvent) error {
+	// Clear prior state to ensure idempotency if called multiple times.
+	agent.ToolCalls = nil
+	agent.FilesTouched = nil
+	agent.TokensIn = 0
+	agent.TokensOut = 0
+	agent.ModelName = ""
+
 	var agentCounter int
 	toolCallsByID := make(map[string]*parser.ContentBlock)
 

@@ -79,7 +79,7 @@ func TestDetail_AgentCursor(t *testing.T) {
 	p := testPromptWithAgents()
 
 	// Initially no focus.
-	if d.IsAgentFocused() {
+	if d.IsItemFocused() {
 		t.Error("expected no agent focused initially")
 	}
 
@@ -88,7 +88,7 @@ func TestDetail_AgentCursor(t *testing.T) {
 	if d.itemCursor != 0 {
 		t.Errorf("expected cursor at 0, got %d", d.itemCursor)
 	}
-	if !d.IsAgentFocused() {
+	if !d.IsItemFocused() {
 		t.Error("expected agent focused after cursor down")
 	}
 

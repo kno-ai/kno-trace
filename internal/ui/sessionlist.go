@@ -155,8 +155,6 @@ func (m sessionListModel) updateNormal(msg tea.KeyMsg) (sessionListModel, tea.Cm
 	case "/":
 		m.filtering = true
 		m.filter = ""
-	case "R":
-		return m, func() tea.Msg { return msgSessionRefresh{} }
 	}
 	return m, nil
 }
@@ -286,8 +284,10 @@ func (m sessionListModel) renderSummary(w int) string {
 	}
 	if sel.ProjectPath != "" {
 		path := sel.ProjectPath
-		if len(path) > w-10 {
+		if w > 16 && len(path) > w-10 {
 			path = "..." + path[len(path)-(w-13):]
+		} else if w <= 16 {
+			path = Truncate(path, max(5, w))
 		}
 		b.WriteString(MutedStyle.Render("Path: ") + DimStyle.Render(path))
 		b.WriteString("\n")

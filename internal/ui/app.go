@@ -310,9 +310,9 @@ func (a App) updateTurns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		selected := a.timeline.list.SelectedPrompt()
 		if selected != nil {
 			a.timeline.detail.HasFocus = true
-			// Disengage auto-follow — the user is drilling into a specific turn.
 			a.timeline.autoFollow = false
-			if len(selected.Agents) > 0 {
+			// Set cursor to first navigable item (tool call or agent).
+			if ItemCount(selected) > 0 {
 				a.timeline.detail.itemCursor = 0
 			}
 		}
@@ -347,7 +347,7 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.timeline.detail.CollapseAgent()
 			return a, nil
 		}
-		if a.timeline.detail.IsAgentFocused() {
+		if a.timeline.detail.IsItemFocused() {
 			a.timeline.detail.itemCursor = -1
 			return a, nil
 		}
@@ -418,14 +418,14 @@ func (a App) updateDetailFocused(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a.timeline.detail.AgentCursorUp()
 		return a, nil
-	case "h", "left", "l", "right":
-		// Scroll in drill-in views (full diff, bash output).
+	case "l", "right":
 		if a.timeline.detail.IsDrilledIntoToolCall() {
-			if msg.String() == "j" || msg.String() == "down" || msg.String() == "l" || msg.String() == "right" {
-				a.timeline.detail.ScrollDown()
-			} else {
-				a.timeline.detail.ScrollUp()
-			}
+			a.timeline.detail.ScrollDown()
+		}
+		return a, nil
+	case "h", "left":
+		if a.timeline.detail.IsDrilledIntoToolCall() {
+			a.timeline.detail.ScrollUp()
 		}
 		return a, nil
 	}

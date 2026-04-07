@@ -51,6 +51,9 @@ func (d *Detail) View(p *model.Prompt, isLive bool) string {
 		w = 50
 	}
 
+	// Reset focusedLine — only set during renderItems for auto-scroll.
+	d.focusedLine = 0
+
 	// Comparison mode: show comparison content.
 	if d.comparison != "" {
 		return d.applyScroll(d.comparison)
@@ -148,7 +151,8 @@ func ResolveItem(p *model.Prompt, cursor int) (*model.ToolCall, int) {
 	return nil, -1
 }
 
-func (d *Detail) IsAgentFocused() bool {
+// IsItemFocused returns true if any item in the detail has cursor focus.
+func (d *Detail) IsItemFocused() bool {
 	return d.itemCursor >= 0
 }
 
@@ -251,24 +255,41 @@ func (d *Detail) applyScroll(content string) string {
 		d.Offset = 0
 	}
 	totalLines := len(lines)
+
+	// Reserve space for scroll indicators.
+	hasAbove := d.Offset > 0
+	hasBelow := d.Offset+visible < totalLines
+	contentVisible := visible
+	if hasAbove {
+		contentVisible--
+	}
+	if hasBelow {
+		contentVisible--
+	}
+	if contentVisible < 1 {
+		contentVisible = visible // too small, skip indicators
+		hasAbove = false
+		hasBelow = false
+	}
+
 	if d.Offset > 0 {
 		lines = lines[d.Offset:]
 	}
-	if len(lines) > visible {
-		lines = lines[:visible]
+	if len(lines) > contentVisible {
+		lines = lines[:contentVisible]
 	}
 
-	// Scroll indicators.
-	if d.Offset > 0 {
-		lines[0] = DimStyle.Render("  ↑ more above")
+	// Prepend/append indicators without replacing content.
+	var result []string
+	if hasAbove {
+		result = append(result, DimStyle.Render("  ↑ more above"))
 	}
-	if d.Offset+visible < totalLines {
-		if len(lines) > 0 {
-			lines[len(lines)-1] = DimStyle.Render(fmt.Sprintf("  ↓ more below (%d lines)", totalLines-d.Offset-visible))
-		}
+	result = append(result, lines...)
+	if hasBelow {
+		result = append(result, DimStyle.Render(fmt.Sprintf("  ↓ more below (%d lines)", totalLines-d.Offset-contentVisible)))
 	}
 
-	return strings.Join(lines, "\n")
+	return strings.Join(result, "\n")
 }
 
 // SetComparison sets the comparison content to display.
@@ -615,20 +636,36 @@ func (d *Detail) renderExpandedAgent(b *strings.Builder, p *model.Prompt, ag *mo
 		b.WriteString("\n\n")
 	}
 
-	// Full tool call list.
+	// Tool calls and nested agents as navigable items.
+	// Items: 0..len(ToolCalls)-1 = tool calls, len(ToolCalls).. = children.
+	itemIdx := 0
 	if len(ag.ToolCalls) > 0 {
 		b.WriteString(MutedStyle.Render("  Tool calls:") + "\n")
-		d.renderToolCalls(b, ag.ToolCalls)
+		for _, tc := range ag.ToolCalls {
+			isFocused := d.HasFocus && d.itemCursor == itemIdx
+			if isFocused {
+				d.focusedLine = strings.Count(b.String(), "\n")
+			}
+			prefix := "    "
+			if isFocused {
+				prefix = "  " + SelectedStyle.Render("> ")
+			}
+			d.renderOneToolCall(b, tc, prefix)
+			itemIdx++
+		}
 	} else if ag.Status == model.AgentRunning {
 		b.WriteString(DimStyle.Render("  Waiting for tool calls...") + "\n")
 	}
 
-	// Nested agents.
 	if len(ag.Children) > 0 {
 		b.WriteString("\n" + MutedStyle.Render("  Nested agents:") + "\n")
-		for i, child := range ag.Children {
-			isFocused := d.itemCursor == i
+		for _, child := range ag.Children {
+			isFocused := d.HasFocus && d.itemCursor == itemIdx
+			if isFocused {
+				d.focusedLine = strings.Count(b.String(), "\n")
+			}
 			d.renderOneAgent(b, child, p, isLive, isFocused, "  ")
+			itemIdx++
 		}
 	}
 }
@@ -940,10 +977,7 @@ func shortModel(m string) string {
 			return name
 		}
 	}
-	if m != "" {
-		return m
-	}
-	return ""
+	return m
 }
 
 func toolIcon(t model.ToolType) string {
