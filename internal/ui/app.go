@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -447,14 +446,9 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 			a.lastBranch = branch
 
 			a.notifyAgentWatcher(msg.Events)
-
-			tickerEntries := extractTickerEntries(msg.Events)
-			a.timeline.ticker.Push(tickerEntries)
-
 			a.timeline.syncSession(a.session)
 
 			if len(sealedIdxs) > 0 {
-				a.timeline.ticker.ResetForNewPrompt()
 				a.timeline.onPromptSealed()
 			}
 		} else {
@@ -486,7 +480,6 @@ func (a *App) handleWatcherMsg(msg tea.Msg) tea.Cmd {
 			if a.session.IsLive {
 				a.timeline.autoFollow = true
 				a.timeline.isLive = true
-				a.timeline.ticker = NewTicker(a.cfg.LoopDetectionThreshold)
 				a.timeline.followLatest()
 
 				if a.session.FilePath != "" {
@@ -663,69 +656,6 @@ func (a *App) enrichCompletedAgent(toolUseID string) {
 
 // --- Helpers ---
 
-func extractTickerEntries(events []*parser.RawEvent) []TickerEntry {
-	var entries []TickerEntry
-	for _, evt := range events {
-		switch evt.Type {
-		case "assistant":
-			if evt.Message == nil {
-				continue
-			}
-			for _, block := range evt.Message.Content {
-				if block.Type != "tool_use" {
-					continue
-				}
-				entries = append(entries, tickerEntryFromBlock(block, evt.Timestamp, ""))
-			}
-		case "progress":
-			if evt.ProgressData == nil || evt.ProgressData.Type != "agent_progress" {
-				continue
-			}
-			for _, block := range evt.ProgressData.ToolUseBlocks {
-				entries = append(entries, tickerEntryFromBlock(
-					block, evt.Timestamp, evt.ProgressData.AgentID))
-			}
-		}
-	}
-	return entries
-}
-
-func tickerEntryFromBlock(block parser.ContentBlock, ts time.Time, agentID string) TickerEntry {
-	toolType, _, _ := parser.ClassifyToolName(block.ToolName)
-	return TickerEntry{
-		ToolType:  toolType,
-		Path:      extractToolPath(block),
-		AgentID:   agentID,
-		Timestamp: ts,
-	}
-}
-
-func extractToolPath(block parser.ContentBlock) string {
-	if len(block.ToolInput) == 0 {
-		return ""
-	}
-	type pathInput struct {
-		FilePath string `json:"file_path"`
-		Pattern  string `json:"pattern"`
-		Command  string `json:"command"`
-	}
-	var pi pathInput
-	if err := json.Unmarshal(block.ToolInput, &pi); err == nil {
-		if pi.FilePath != "" {
-			return pi.FilePath
-		}
-		if pi.Pattern != "" {
-			return pi.Pattern
-		}
-		if pi.Command != "" {
-			if len(pi.Command) > 50 {
-				return pi.Command[:50] + "..."
-			}
-			return pi.Command
-		}
-	}
-	return ""
-}
 
 func (a *App) rebuildSession() {
 	if len(a.events) == 0 {

@@ -18,20 +18,6 @@ var (
 	ColorCyan      = lipgloss.Color("#8BE9FD")
 )
 
-// AgentColors is an ordered palette for agent attribution in the live ticker.
-// Assigned round-robin as agents first appear. Avoids red and green which
-// carry semantic meaning (errors, success) in the rest of the UI.
-var AgentColors = []lipgloss.Color{
-	lipgloss.Color("#6C9EFF"), // blue
-	lipgloss.Color("#B39DDB"), // purple
-	lipgloss.Color("#FFB74D"), // orange
-	lipgloss.Color("#4DD0E1"), // cyan
-	lipgloss.Color("#F48FB1"), // pink
-	lipgloss.Color("#9FA8DA"), // lavender
-	lipgloss.Color("#FFD54F"), // amber
-	lipgloss.Color("#90A4AE"), // slate
-}
-
 // Shared styles used across views.
 var (
 	// Title bar at the top of each screen.

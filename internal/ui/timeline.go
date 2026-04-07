@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -31,7 +30,6 @@ type timelineModel struct {
 	// Live session state.
 	isLive     bool   // mirrors session.IsLive
 	autoFollow bool   // true = cursor tracks latest prompt
-	ticker     Ticker // live tool call ticker
 }
 
 func newTimeline(session *model.Session) timelineModel {
@@ -58,11 +56,8 @@ func (t *timelineModel) setSize(w, h int) {
 	listWidth := max(15, w*t.splitPct/100)
 	detailWidth := max(1, w-listWidth-3) // 3 for divider + padding
 
-	// Reserve lines: breadcrumb + stats bar + padding + ticker (when live).
-	reserved := 4 // breadcrumb + stats + padding
-	if t.isLive {
-		reserved = 5 // extra line for ticker strip
-	}
+	// Reserve lines: breadcrumb + stats bar + padding.
+	reserved := 4
 	contentHeight := max(1, h-reserved)
 
 	t.list.Width = listWidth
@@ -291,16 +286,10 @@ func (t timelineModel) View() string {
 		rightContent,
 	)
 
-	// Ticker strip (only for live sessions with activity).
-	tickerLine := ""
-	if t.isLive && t.ticker.HasEntries() {
-		tickerLine = "  " + t.ticker.View(t.width-4, time.Now()) + "\n"
-	}
-
 	// Stats bar at bottom.
 	stats := t.statsBar()
 
-	return layout + "\n" + tickerLine + stats
+	return layout + "\n" + stats
 }
 
 func (t timelineModel) statsBar() string {
