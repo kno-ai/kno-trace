@@ -23,8 +23,12 @@ type Detail struct {
 	itemCursor int
 
 	// focusedLine is the line number of the focused item in the rendered content.
-	// Set during rendering so applyScroll can auto-scroll to keep it visible.
 	focusedLine int
+
+	// cursorMoved is set when the user actively navigates (j/k). Auto-scroll
+	// only kicks in after the first move — on initial focus entry, the view
+	// stays where it was so the user keeps context of the prompt/response.
+	cursorMoved bool
 
 	// Agent expansion state.
 	expandedPath    []string
@@ -209,12 +213,14 @@ func (d *Detail) AgentCursorDown(count int) {
 	if d.itemCursor < count-1 {
 		d.itemCursor++
 	}
+	d.cursorMoved = true
 }
 
 func (d *Detail) AgentCursorUp() {
 	if d.itemCursor > 0 {
 		d.itemCursor--
 	}
+	d.cursorMoved = true
 }
 
 func (d *Detail) ResetExpansion() {
@@ -223,6 +229,7 @@ func (d *Detail) ResetExpansion() {
 	d.itemCursor = -1
 	d.drillIn = ""
 	d.HasFocus = false
+	d.cursorMoved = false
 }
 
 // applyScroll handles vertical scrolling within the detail content.
@@ -238,8 +245,10 @@ func (d *Detail) applyScroll(content string) string {
 		maxOffset = 0
 	}
 
-	// Auto-scroll to keep focused item visible.
-	if d.HasFocus && d.focusedLine > 0 {
+	// Auto-scroll to keep focused item visible — only after the user has
+	// actively navigated (j/k). On initial focus entry, the view stays
+	// where it was so the user keeps context of the prompt/response.
+	if d.HasFocus && d.cursorMoved && d.focusedLine > 0 {
 		if d.focusedLine < d.Offset {
 			d.Offset = d.focusedLine
 		}

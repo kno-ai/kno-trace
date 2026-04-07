@@ -315,8 +315,8 @@ func (a App) updateTurns(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if ItemCount(selected) > 0 {
 				a.timeline.detail.itemCursor = 0
 			}
-			// Scroll will auto-adjust to show the focused item on next render.
-			a.timeline.detail.ScrollToBottom()
+			// Don't scroll — keep the current view. The > cursor appears in place.
+			// If it's off-screen, j/k will scroll to it naturally.
 		}
 		return a, nil
 	}
