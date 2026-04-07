@@ -393,9 +393,10 @@ func populateAgentResult(evt *RawEvent, prompt *model.Prompt, toolUseID string) 
 		agent.TotalDurationMs = agentResult.TotalDurationMs
 		agent.TotalTokens = agentResult.TotalTokens
 		agent.TotalToolUseCount = agentResult.TotalToolUseCount
-		if agentResult.Status == "completed" {
+		switch agentResult.Status {
+		case "completed", "async_launched":
 			agent.Status = model.AgentSucceeded
-		} else {
+		default:
 			agent.Status = model.AgentFailed
 		}
 		return
