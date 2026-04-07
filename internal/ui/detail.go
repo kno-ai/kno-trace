@@ -806,7 +806,7 @@ func (d *Detail) renderFileActivity(b *strings.Builder, p *model.Prompt) {
 		return
 	}
 
-	// Sort by activity (writes + edits first).
+	// Sort by activity (writes + edits first), then alphabetically for stability.
 	type sortEntry struct {
 		*fileEntry
 		heat int
@@ -815,10 +815,14 @@ func (d *Detail) renderFileActivity(b *strings.Builder, p *model.Prompt) {
 	for _, fe := range files {
 		sorted = append(sorted, sortEntry{fe, fe.writes + fe.edits})
 	}
-	// Simple insertion sort — small N.
 	for i := 1; i < len(sorted); i++ {
-		for j := i; j > 0 && sorted[j].heat > sorted[j-1].heat; j-- {
-			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		for j := i; j > 0; j-- {
+			if sorted[j].heat > sorted[j-1].heat ||
+				(sorted[j].heat == sorted[j-1].heat && sorted[j].path < sorted[j-1].path) {
+				sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+			} else {
+				break
+			}
 		}
 	}
 
